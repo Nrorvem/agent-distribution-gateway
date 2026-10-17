@@ -7,7 +7,7 @@
   "remotes": [
     {
       "transport_type": "streamable-http",
-      "url": "https://YOUR_VERCEL_DOMAIN.vercel.app/api/mcp"
+      "url": "https://agent-distribution-gateway.vercel.app/api/mcp"
     }
   ]
 }

@@ -35,7 +35,7 @@ export async function GET() {
         post: {
           operationId: "enrichPerson",
           summary: "Enrich B2B person profile and find verified work email via Apollo.io",
-          description: PERSON_ENRICH_JSON_SCHEMA.description,
+          description: PERSON_ENRICH_JSON_SCHEMA.input.description,
           tags: ["B2B Enrichment", "Email Finder", "Apollo"],
           "x-payment-info": {
             price: {

@@ -146,13 +146,15 @@ export function getGateConfig() {
   const atomicUnits = String(Math.round(parseFloat(priceUsd) * 1_000_000));
   const payTo =
     process.env.X402_WALLET_ADDRESS || "0x71C95911E9a5D330f4D621842EC243EE1343292e";
-  // On Base Mainnet ("base"), default to PayAI's public keyless x402 facilitator
-  // (https://x402.org/facilitator only supports base-sepolia testnet).
-  const defaultFacilitator =
-    network === "base"
+  // On Base Mainnet ("base"), default to PayAI's public keyless x402 facilitator.
+  // Note: https://x402.org/facilitator only supports base-sepolia testnet and throws
+  // "No facilitator registered for scheme: exact and network: base" on Mainnet, so we
+  // automatically upgrade it to https://facilitator.payai.network when network === "base".
+  const envFacilitator = (process.env.X402_FACILITATOR_URL || "").trim().replace(/\/+$/, "");
+  const facilitatorUrl =
+    network === "base" && (!envFacilitator || envFacilitator === "https://x402.org/facilitator")
       ? "https://facilitator.payai.network"
-      : "https://x402.org/facilitator";
-  const facilitatorUrl = process.env.X402_FACILITATOR_URL || defaultFacilitator;
+      : envFacilitator || "https://x402.org/facilitator";
   const devBypassToken =
     process.env.NODE_ENV === "production"
       ? ""

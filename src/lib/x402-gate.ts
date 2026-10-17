@@ -162,9 +162,9 @@ export function getGateConfig() {
   // Maximum age of a direct on-chain txHash in seconds (default: 300s = 5 minutes)
   // Prevents replaying historical transactions after a serverless cold start.
   const maxTxAgeSeconds = parseInt(process.env.X402_MAX_TX_AGE_SECONDS || "300", 10);
-  // Path A toggle: set X402_ALLOW_DIRECT_TX_HASH=false to retire direct txHash redemption
-  // once Path B (EIP-3009 Facilitator settlement) is verified.
-  const allowDirectTxHash = process.env.X402_ALLOW_DIRECT_TX_HASH !== "false";
+  // Path A is retired by default: 100% of production payments must use Path B
+  // (standard x402 EIP-3009 Facilitator settlement with on-chain USDC smart contract nonces).
+  const allowDirectTxHash = process.env.X402_ALLOW_DIRECT_TX_HASH === "true";
 
   return {
     network,

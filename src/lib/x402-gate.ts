@@ -165,10 +165,129 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
   };
 }
 
+const BASE_RPC_URLS: Record<string, string> = {
+  base: "https://mainnet.base.org",
+  "base-sepolia": "https://sepolia.base.org",
+};
+
+// ERC-20 Transfer(address indexed from, address indexed to, uint256 value) topic0
+const ERC20_TRANSFER_TOPIC0 =
+  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
 /**
- * Verifies the incoming `X-PAYMENT` header against either:
- * 1. The local dev bypass proof (for zero-cost local simulation of the 6-stage lifecycle)
- * 2. The Coinbase x402 Facilitator (`/verify` & `/settle`) for real USDC payments on Base.
+ * Directly verifies a settled Base Mainnet / Base Sepolia USDC transaction hash via JSON-RPC.
+ * Checks:
+ * 1. Transaction receipt exists and status === "0x1" (succeeded)
+ * 2. Emitted ERC-20 Transfer log from the official Base USDC contract
+ * 3. Recipient (`to`) matches `cfg.payTo` (0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC)
+ * 4. Amount transferred (`value`) >= `cfg.atomicUnits` (100000 = $0.10 USDC)
+ */
+async function verifyDirectOnChainTxHash(
+  txHash: string,
+  cfg: ReturnType<typeof getGateConfig>
+): Promise<{
+  verified: boolean;
+  payer?: string;
+  txHash?: string;
+  error?: string;
+}> {
+  const rpcUrl = BASE_RPC_URLS[cfg.network] || BASE_RPC_URLS.base;
+
+  // Replay protection: ensure this txHash hasn't already been redeemed in recent logs
+  const existingLogs = loadAuditLogsFromDisk();
+  if (existingLogs.some((l) => l.tx_hash?.toLowerCase() === txHash.toLowerCase())) {
+    return {
+      verified: false,
+      error: `Transaction hash ${txHash} has already been redeemed.`,
+    };
+  }
+
+  try {
+    const rpcRes = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_getTransactionReceipt",
+        params: [txHash],
+      }),
+    });
+
+    if (!rpcRes.ok) {
+      return { verified: false, error: `Base RPC returned HTTP ${rpcRes.status}` };
+    }
+
+    const rpcData = (await rpcRes.json()) as {
+      result?: {
+        status?: string;
+        from?: string;
+        logs?: Array<{
+          address?: string;
+          topics?: string[];
+          data?: string;
+        }>;
+      };
+    };
+
+    const receipt = rpcData.result;
+    if (!receipt) {
+      return {
+        verified: false,
+        error: `Transaction ${txHash} not found or not yet confirmed on ${cfg.network}.`,
+      };
+    }
+
+    if (receipt.status !== "0x1") {
+      return {
+        verified: false,
+        error: `Transaction ${txHash} failed on-chain (status=${receipt.status}).`,
+      };
+    }
+
+    const expectedAsset = cfg.asset.toLowerCase();
+    const expectedRecipientTopic =
+      "0x000000000000000000000000" + cfg.payTo.toLowerCase().replace(/^0x/, "");
+    const minAtomic = BigInt(cfg.atomicUnits);
+
+    const matchingLog = (receipt.logs || []).find((log) => {
+      if (!log.address || log.address.toLowerCase() !== expectedAsset) return false;
+      if (!Array.isArray(log.topics) || log.topics.length < 3) return false;
+      if (log.topics[0].toLowerCase() !== ERC20_TRANSFER_TOPIC0) return false;
+      if (log.topics[2].toLowerCase() !== expectedRecipientTopic) return false;
+      const transferredAmount = BigInt(log.data || "0x0");
+      return transferredAmount >= minAtomic;
+    });
+
+    if (!matchingLog) {
+      return {
+        verified: false,
+        error: `Transaction ${txHash} did not transfer at least $${cfg.priceUsd} USDC (${cfg.atomicUnits} units) to ${cfg.payTo} on ${cfg.network}.`,
+      };
+    }
+
+    const fromTopic = matchingLog.topics?.[1] || "";
+    const payerAddress =
+      fromTopic.length === 66 ? "0x" + fromTopic.slice(26) : receipt.from || "0xOnChainPayer";
+
+    return {
+      verified: true,
+      payer: payerAddress,
+      txHash,
+    };
+  } catch (err: any) {
+    return {
+      verified: false,
+      error: `Failed to verify txHash on Base RPC: ${err?.message || String(err)}`,
+    };
+  }
+}
+
+/**
+ * Verifies the incoming `X-PAYMENT` header against:
+ * 1. The local dev bypass proof (only in non-production environments)
+ * 2. A direct on-chain Base USDC transaction hash (`0x...`, verified via Base Mainnet RPC)
+ * 3. An x402 EIP-3009 cryptographic signature verified & settled via the x402 Facilitator
  */
 export async function verifyX402Payment(
   paymentHeader: string | null,
@@ -185,10 +304,11 @@ export async function verifyX402Payment(
     return { verified: false, error: "Missing X-PAYMENT header" };
   }
 
+  const trimmed = paymentHeader.trim();
   const cfg = getGateConfig();
 
-  // 1. Check if caller used the local dev test proof (plain or base64 JSON)
-  if (cfg.devBypassToken && paymentHeader.trim() === cfg.devBypassToken) {
+  // 1. Check if caller used the local dev test proof (ONLY active outside production)
+  if (cfg.devBypassToken && trimmed === cfg.devBypassToken) {
     return {
       verified: true,
       payer: "0xAgentBuyerLocalTestWallet",
@@ -199,7 +319,7 @@ export async function verifyX402Payment(
 
   if (cfg.devBypassToken) {
     try {
-      const decodedStr = Buffer.from(paymentHeader, "base64").toString("utf-8");
+      const decodedStr = Buffer.from(trimmed, "base64").toString("utf-8");
       const parsed = JSON.parse(decodedStr) as Record<string, any>;
       if (parsed && parsed.devBypassToken === cfg.devBypassToken) {
         return {
@@ -210,11 +330,25 @@ export async function verifyX402Payment(
         };
       }
     } catch {
-      // Not a dev bypass JSON; proceed to real x402 facilitator verification
+      // Not a dev bypass JSON; proceed to on-chain / facilitator verification
     }
   }
 
-  // 2. Verify and settle against the x402 Facilitator
+  // 2. Check if caller passed a direct on-chain Base transaction hash (0x + 64 hex chars)
+  if (/^0x[a-fA-F0-9]{64}$/.test(trimmed)) {
+    const rpcVerify = await verifyDirectOnChainTxHash(trimmed, cfg);
+    if (rpcVerify.verified) {
+      return {
+        verified: true,
+        payer: rpcVerify.payer,
+        mode: "facilitator_onchain",
+        txHash: rpcVerify.txHash,
+      };
+    }
+    return { verified: false, error: rpcVerify.error };
+  }
+
+  // 3. Verify and settle EIP-3009 off-chain signature against the x402 Facilitator
   const challenge = buildX402Challenge(resourceUrl, description);
   const paymentRequirement = challenge.accepts[0];
 
@@ -224,7 +358,7 @@ export async function verifyX402Payment(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         x402Version: 1,
-        paymentHeader,
+        paymentHeader: trimmed,
         paymentRequirements: paymentRequirement,
       }),
     });
@@ -234,11 +368,17 @@ export async function verifyX402Payment(
       return { verified: false, error: `x402 verification failed: ${errText}` };
     }
 
-    const verifyJson = (await verifyRes.json()) as { isValid?: boolean; invalidReason?: string; payer?: string };
+    const verifyJson = (await verifyRes.json()) as {
+      isValid?: boolean;
+      invalidReason?: string;
+      payer?: string;
+    };
     if (!verifyJson.isValid) {
       return {
         verified: false,
-        error: verifyJson.invalidReason || "Invalid x402 payment signature or insufficient USDC",
+        error:
+          verifyJson.invalidReason ||
+          "Invalid x402 payment signature or insufficient USDC",
       };
     }
 
@@ -248,7 +388,7 @@ export async function verifyX402Payment(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         x402Version: 1,
-        paymentHeader,
+        paymentHeader: trimmed,
         paymentRequirements: paymentRequirement,
       }),
     });
@@ -261,7 +401,10 @@ export async function verifyX402Payment(
       verified: true,
       payer: verifyJson.payer || "0xVerifiedAgentWallet",
       mode: "facilitator_onchain",
-      txHash: settleJson.txHash || settleJson.transaction || `0xbase_${Date.now().toString(16)}`,
+      txHash:
+        settleJson.txHash ||
+        settleJson.transaction ||
+        `0xbase_${Date.now().toString(16)}`,
     };
   } catch (err: any) {
     return {

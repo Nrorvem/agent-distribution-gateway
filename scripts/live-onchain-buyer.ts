@@ -77,10 +77,13 @@ async function main() {
   }
 
   const reqTerms = challengeData.accepts?.[0];
+  const atomicAmount = String(reqTerms?.amount || reqTerms?.maxAmountRequired || "100000");
+  const usdDisplay = (Number(atomicAmount) / 1_000_000).toFixed(2);
+  console.log(`   • x402 Version    : v${challengeData.x402Version}`);
   console.log(`   • x402 Network    : ${reqTerms?.network}`);
   console.log(`   • USDC Contract   : ${reqTerms?.asset}`);
   console.log(`   • Pay To Wallet   : ${reqTerms?.payTo}`);
-  console.log(`   • Amount Required : $${reqTerms?.extra?.priceUsd} USDC (${reqTerms?.maxAmountRequired} atomic units)`);
+  console.log(`   • Amount Required : $${usdDisplay} USDC (${atomicAmount} atomic units)`);
   console.log(`   • Bazaar Discovery: discoverable=${Boolean(challengeData.extensions?.bazaar?.discoverable)}\n`);
 
   const buyerPrivKey = process.env.BUYER_PRIVATE_KEY || localEnv.BUYER_PRIVATE_KEY || "";
@@ -88,28 +91,31 @@ async function main() {
 
   if (buyerPrivKey) {
     const buyerAddress = privateKeyToAddress(buyerPrivKey);
-    console.log("2️⃣  Path B (Standard x402 Agent Flow — EIP-3009 Gasless Signature):");
+    console.log("2️⃣  Path B (Standard x402 v2 Agent Flow — EIP-3009 Gasless Signature):");
     console.log(`   • Buyer Agent Wallet : ${buyerAddress}`);
     console.log(`   • Paying To (Ledger) : ${reqTerms.payTo}`);
-    console.log(`   • Signing EIP-3009 TransferWithAuthorization ($${reqTerms?.extra?.priceUsd} USDC, 0 ETH gas)...`);
+    console.log(`   • Signing EIP-3009 TransferWithAuthorization ($${usdDisplay} USDC, 0 ETH gas)...`);
 
     const signed = buildSignedX402PaymentHeader({
       privateKeyHex: buyerPrivKey,
-      network: reqTerms.network || "base",
+      network: reqTerms.network || "eip155:8453",
       usdcAddress: reqTerms.asset,
       payTo: reqTerms.payTo,
-      valueAtomic: String(reqTerms.maxAmountRequired),
+      valueAtomic: atomicAmount,
+      resourceUrl: challengeData.resource?.url || PRODUCTION_ENDPOINT,
+      description: challengeData.resource?.description,
       tokenName: reqTerms.extra?.name || "USD Coin",
       tokenVersion: reqTerms.extra?.version || "2",
     });
 
     console.log(`   • Nonce              : ${signed.paymentPayload.payload.authorization.nonce}`);
-    console.log(`   • Submitting X-PAYMENT header to ${PRODUCTION_ENDPOINT} ...\n`);
+    console.log(`   • Submitting PAYMENT-SIGNATURE header to ${PRODUCTION_ENDPOINT} ...\n`);
 
     const paidRes = await fetch(PRODUCTION_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "PAYMENT-SIGNATURE": signed.headerBase64,
         "X-PAYMENT": signed.headerBase64,
       },
       body: JSON.stringify(payload),

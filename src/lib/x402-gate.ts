@@ -15,26 +15,28 @@ import { PERSON_ENRICH_JSON_SCHEMA } from "../verticals/option-a-apollo/schema.t
 
 export interface X402PaymentRequirement {
   scheme: "exact";
-  network: "base" | "base-sepolia";
-  maxAmountRequired: string; // USDC atomic units (6 decimals: $0.10 = "100000")
-  resource: string;
-  description: string;
-  mimeType: "application/json";
+  network: "eip155:8453" | "eip155:84532" | "base" | "base-sepolia";
+  amount: string; // USDC atomic units (6 decimals: $0.10 = "100000")
+  maxAmountRequired?: string; // Included for v1 backwards-compatibility if needed
+  asset: string; // USDC contract address on Base
   payTo: string;
   maxTimeoutSeconds: number;
-  asset: string; // USDC contract address on Base
-  outputSchema?: Record<string, unknown>;
   extra: {
     name: string;
     version: string;
-    priceUsd: string;
-    discoverable: boolean;
+    priceUsd?: string;
+    discoverable?: boolean;
   };
 }
 
 export interface X402ChallengePayload {
-  x402Version: 1;
+  x402Version: 2;
   error: string;
+  resource: {
+    url: string;
+    description: string;
+    mimeType: "application/json";
+  };
   accepts: X402PaymentRequirement[];
   extensions?: {
     bazaar?: {
@@ -43,6 +45,8 @@ export interface X402ChallengePayload {
       description: string;
       inputSchema: Record<string, unknown>;
       outputSchema: Record<string, unknown>;
+      info?: Record<string, unknown>;
+      schema?: Record<string, unknown>;
     };
   };
 }
@@ -166,8 +170,12 @@ export function getGateConfig() {
   // (standard x402 EIP-3009 Facilitator settlement with on-chain USDC smart contract nonces).
   const allowDirectTxHash = process.env.X402_ALLOW_DIRECT_TX_HASH === "true";
 
+  const networkCaip2: "eip155:8453" | "eip155:84532" =
+    network === "base" ? "eip155:8453" : "eip155:84532";
+
   return {
     network,
+    networkCaip2,
     priceUsd,
     atomicUnits,
     payTo,
@@ -180,38 +188,30 @@ export function getGateConfig() {
 }
 
 /**
- * Generates the standard x402 HTTP 402 Payment Required challenge payload.
+ * Generates the standard x402 v2 HTTP 402 Payment Required challenge payload.
  */
 export function buildX402Challenge(resourceUrl: string, description: string): X402ChallengePayload {
   const cfg = getGateConfig();
   return {
-    x402Version: 1,
-    error: "X-PAYMENT header is required to execute this tool. Attach a signed x402 USDC payment payload.",
+    x402Version: 2,
+    error:
+      "Payment Required. Attach a signed x402 USDC payment payload in the PAYMENT-SIGNATURE (or X-PAYMENT) header.",
+    resource: {
+      url: resourceUrl,
+      description,
+      mimeType: "application/json",
+    },
     accepts: [
       {
         scheme: "exact",
-        network: cfg.network,
-        maxAmountRequired: cfg.atomicUnits,
-        resource: resourceUrl,
-        description,
-        mimeType: "application/json",
+        network: cfg.networkCaip2,
+        amount: cfg.atomicUnits,
+        asset: cfg.asset,
         payTo: cfg.payTo,
         maxTimeoutSeconds: 60,
-        asset: cfg.asset,
-        outputSchema: {
-          input: {
-            type: "http",
-            method: "POST",
-            bodyType: "json",
-            bodyFields: PERSON_ENRICH_JSON_SCHEMA.input.properties,
-          },
-          output: PERSON_ENRICH_JSON_SCHEMA.output,
-        },
         extra: {
           name: "USD Coin",
           version: "2",
-          priceUsd: cfg.priceUsd,
-          discoverable: true,
         },
       },
     ],
@@ -222,9 +222,34 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
         description,
         inputSchema: PERSON_ENRICH_JSON_SCHEMA.input,
         outputSchema: PERSON_ENRICH_JSON_SCHEMA.output,
+        info: {
+          input: {
+            type: "http",
+            method: "POST",
+            bodyType: "json",
+            body: {
+              first_name: "Fidji",
+              last_name: "Simo",
+              domain: "instacart.com",
+            },
+          },
+          output: {
+            type: "json",
+          },
+        },
+        schema: {
+          properties: {
+            input: PERSON_ENRICH_JSON_SCHEMA.input,
+            output: PERSON_ENRICH_JSON_SCHEMA.output,
+          },
+        },
       },
     },
   };
+}
+
+export function encodePaymentRequiredHeader(challenge: X402ChallengePayload): string {
+  return Buffer.from(JSON.stringify(challenge), "utf-8").toString("base64");
 }
 
 const BASE_RPC_URLS: Record<string, string> = {
@@ -474,7 +499,7 @@ export async function verifyX402Payment(
 
   // 3. Verify and settle EIP-3009 off-chain signature against the x402 Facilitator (Path B)
   const challenge = buildX402Challenge(resourceUrl, description);
-  const paymentRequirement = challenge.accepts[0];
+  const v2Requirement = challenge.accepts[0];
 
   let paymentPayload: Record<string, any> | undefined;
   let paymentHeaderBase64 = trimmed;
@@ -490,15 +515,35 @@ export async function verifyX402Payment(
     return {
       verified: false,
       error:
-        "Invalid X-PAYMENT header format: expected Base64-encoded x402 JSON paymentPayload.",
+        "Invalid payment header format: expected Base64-encoded x402 JSON paymentPayload.",
     };
   }
 
+  const payloadVersion = Number(paymentPayload?.x402Version) === 1 ? 1 : 2;
+  const paymentRequirements =
+    payloadVersion === 1
+      ? {
+          scheme: "exact",
+          network: cfg.network,
+          maxAmountRequired: cfg.atomicUnits,
+          resource: resourceUrl,
+          description,
+          mimeType: "application/json",
+          payTo: cfg.payTo,
+          maxTimeoutSeconds: 60,
+          asset: cfg.asset,
+          extra: {
+            name: "USD Coin",
+            version: "2",
+          },
+        }
+      : v2Requirement;
+
   const facilitatorRequestBody = {
-    x402Version: paymentPayload?.x402Version || 1,
+    x402Version: payloadVersion,
     paymentHeader: paymentHeaderBase64,
     paymentPayload,
-    paymentRequirements: paymentRequirement,
+    paymentRequirements,
   };
 
   try {

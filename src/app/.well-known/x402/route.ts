@@ -18,7 +18,7 @@ export async function GET() {
 
   return NextResponse.json(
     {
-      x402Version: 1,
+      x402Version: 2,
       seller: {
         name: "Agent Distribution Gateway — Apollo.io B2B Person Enrichment",
         description,
@@ -35,11 +35,11 @@ export async function GET() {
           method: "POST",
           description,
           price: cfg.priceUsd,
-          maxAmountRequired: cfg.atomicUnits,
+          amount: cfg.atomicUnits,
           currency: "USDC",
           asset: cfg.asset,
-          network: cfg.network,
-          networks: ["base", "eip155:8453"],
+          network: cfg.networkCaip2,
+          networks: ["eip155:8453"],
           payTo: cfg.payTo,
           facilitatorUrl: cfg.facilitatorUrl,
           inputSchema: PERSON_ENRICH_JSON_SCHEMA.input,

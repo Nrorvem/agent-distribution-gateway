@@ -236,28 +236,24 @@ export interface Eip3009Authorization {
 
 export function buildSignedX402PaymentHeader(params: {
   privateKeyHex: string;
-  network: "base" | "base-sepolia";
+  network: "eip155:8453" | "eip155:84532" | "base" | "base-sepolia";
   usdcAddress: string;
   payTo: string;
   valueAtomic: string;
+  resourceUrl?: string;
+  description?: string;
   tokenName?: string;
   tokenVersion?: string;
   validForSeconds?: number;
 }): {
   headerBase64: string;
-  paymentPayload: {
-    x402Version: 1;
-    scheme: "exact";
-    network: "base" | "base-sepolia";
-    payload: {
-      signature: string;
-      authorization: Eip3009Authorization;
-    };
-  };
+  paymentPayload: Record<string, any>;
   payerAddress: string;
 } {
   const payerAddress = privateKeyToAddress(params.privateKeyHex);
-  const chainId = params.network === "base" ? 8453 : 84532;
+  const isMainnet = params.network === "base" || params.network === "eip155:8453";
+  const chainId = isMainnet ? 8453 : 84532;
+  const caip2Network = isMainnet ? "eip155:8453" : "eip155:84532";
   const tokenName = params.tokenName || "USD Coin";
   const tokenVersion = params.tokenVersion || "2";
   const nowSec = Math.floor(Date.now() / 1000);
@@ -322,9 +318,28 @@ export function buildSignedX402PaymentHeader(params: {
   };
 
   const paymentPayload = {
-    x402Version: 1 as const,
-    scheme: "exact" as const,
-    network: params.network,
+    x402Version: 2 as const,
+    resource: {
+      url:
+        params.resourceUrl ||
+        "https://agent-distribution-gateway.vercel.app/api/v1/enrich/person",
+      description:
+        params.description ||
+        "Apollo.io Verified B2B Person Enrichment (1 profile lookup)",
+      mimeType: "application/json",
+    },
+    accepted: {
+      scheme: "exact" as const,
+      network: caip2Network,
+      amount: params.valueAtomic,
+      asset: params.usdcAddress,
+      payTo: params.payTo,
+      maxTimeoutSeconds: 60,
+      extra: {
+        name: tokenName,
+        version: tokenVersion,
+      },
+    },
     payload: {
       signature,
       authorization,

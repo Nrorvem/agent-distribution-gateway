@@ -6,6 +6,7 @@ import {
 import { enrichPersonWithApollo } from "@/verticals/option-a-apollo/connector";
 import {
   buildX402Challenge,
+  encodePaymentRequiredHeader,
   verifyX402Payment,
   recordAuditLog,
   getGateConfig,
@@ -25,7 +26,9 @@ export async function GET(req: NextRequest) {
     status: "operational",
     pricing: {
       protocol: "x402",
-      network: cfg.network,
+      x402Version: 2,
+      network: cfg.networkCaip2,
+      legacyNetwork: cfg.network,
       asset: cfg.asset,
       symbol: "USDC",
       price_usd: cfg.priceUsd,
@@ -48,7 +51,7 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST /api/v1/enrich/person
- * Zero-signup x402-gated Person Enrichment endpoint.
+ * Zero-signup x402-gated Person Enrichment endpoint (supports x402 v2 & v1).
  */
 export async function POST(req: NextRequest) {
   let body: unknown = {};
@@ -56,36 +59,34 @@ export async function POST(req: NextRequest) {
     const text = await req.text();
     body = text.trim() ? JSON.parse(text) : {};
   } catch {
-    return NextResponse.json(
-      { error: "Invalid JSON body." },
-      { status: 400 }
-    );
+    body = {};
   }
 
   const resourceUrl = req.nextUrl.toString();
   const description = "Apollo.io Verified B2B Person Enrichment (1 profile lookup)";
   const paymentHeader =
-    req.headers.get("x-payment") || req.headers.get("X-PAYMENT");
+    req.headers.get("payment-signature") ||
+    req.headers.get("PAYMENT-SIGNATURE") ||
+    req.headers.get("x-payment") ||
+    req.headers.get("X-PAYMENT");
 
-  const isEmptyProbe =
-    body &&
-    typeof body === "object" &&
-    Object.keys(body as Record<string, unknown>).length === 0;
-
-  // If this is an empty-body discovery probe without X-PAYMENT (used by x402 Bazaar validators),
-  // immediately return the HTTP 402 Payment Required challenge + Bazaar schema metadata.
-  if (!paymentHeader && isEmptyProbe) {
+  // 1. If no payment header is attached, immediately return the x402 v2 402 challenge
+  // (Per x402scan discovery spec: unauthenticated probes must reach the 402 challenge
+  // before body validation rejects the request.)
+  if (!paymentHeader) {
     const challenge = buildX402Challenge(resourceUrl, description);
     return NextResponse.json(challenge, {
       status: 402,
       headers: {
         "Content-Type": "application/json",
+        "PAYMENT-REQUIRED": encodePaymentRequiredHeader(challenge),
         "X-Payment-Protocol": "x402",
       },
     });
   }
 
-  // Validate input schema BEFORE requesting payment so agents never pay for invalid inputs
+  // 2. Validate input schema BEFORE settling payment so a paying agent is never
+  // charged if its request body is malformed.
   const validation = validatePersonEnrichInput(body);
   if (!validation.valid || !validation.data) {
     return NextResponse.json(
@@ -97,19 +98,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // If no X-PAYMENT header is attached, return HTTP 402 Payment Required
-  if (!paymentHeader) {
-    const challenge = buildX402Challenge(resourceUrl, description);
-    return NextResponse.json(challenge, {
-      status: 402,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Payment-Protocol": "x402",
-      },
-    });
-  }
-
-  // Step 3: Verify and settle the x402 payment proof
+  // 3. Verify and settle the x402 payment proof on Base Mainnet
   const paymentResult = await verifyX402Payment(
     paymentHeader,
     resourceUrl,
@@ -117,14 +106,18 @@ export async function POST(req: NextRequest) {
   );
 
   if (!paymentResult.verified) {
-    const challenge = buildX402Challenge(resourceUrl, description);
-    return NextResponse.json(
-      {
-        ...challenge,
-        error: paymentResult.error || "Payment verification failed",
+    const challenge = {
+      ...buildX402Challenge(resourceUrl, description),
+      error: paymentResult.error || "Payment verification failed",
+    };
+    return NextResponse.json(challenge, {
+      status: 402,
+      headers: {
+        "Content-Type": "application/json",
+        "PAYMENT-REQUIRED": encodePaymentRequiredHeader(challenge),
+        "X-Payment-Protocol": "x402",
       },
-      { status: 402 }
-    );
+    });
   }
 
   // Step 4: Execute Supply Connector (Apollo.io /api/v1/people/match)

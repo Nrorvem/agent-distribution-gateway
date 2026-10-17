@@ -1,12 +1,16 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Nrorvem/apollo-person-enrichment",
+  "title": "Apollo.io B2B Person Enrichment & Verified Email Finder (x402)",
   "description": "Apollo.io B2B Person Enrichment & Verified Work Email Finder via x402 on Base ($0.10 USDC/call).",
-  "status": "active",
+  "repository": {
+    "url": "https://github.com/Nrorvem/agent-distribution-gateway",
+    "source": "github"
+  },
   "version": "0.2.0",
   "remotes": [
     {
-      "transport_type": "streamable-http",
+      "type": "streamable-http",
       "url": "https://agent-distribution-gateway.vercel.app/api/mcp"
     }
   ]

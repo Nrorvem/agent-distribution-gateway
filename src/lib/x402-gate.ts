@@ -146,8 +146,13 @@ export function getGateConfig() {
   const atomicUnits = String(Math.round(parseFloat(priceUsd) * 1_000_000));
   const payTo =
     process.env.X402_WALLET_ADDRESS || "0x71C95911E9a5D330f4D621842EC243EE1343292e";
-  const facilitatorUrl =
-    process.env.X402_FACILITATOR_URL || "https://x402.org/facilitator";
+  // On Base Mainnet ("base"), default to PayAI's public keyless x402 facilitator
+  // (https://x402.org/facilitator only supports base-sepolia testnet).
+  const defaultFacilitator =
+    network === "base"
+      ? "https://facilitator.payai.network"
+      : "https://x402.org/facilitator";
+  const facilitatorUrl = process.env.X402_FACILITATOR_URL || defaultFacilitator;
   const devBypassToken =
     process.env.NODE_ENV === "production"
       ? ""
@@ -155,6 +160,9 @@ export function getGateConfig() {
   // Maximum age of a direct on-chain txHash in seconds (default: 300s = 5 minutes)
   // Prevents replaying historical transactions after a serverless cold start.
   const maxTxAgeSeconds = parseInt(process.env.X402_MAX_TX_AGE_SECONDS || "300", 10);
+  // Path A toggle: set X402_ALLOW_DIRECT_TX_HASH=false to retire direct txHash redemption
+  // once Path B (EIP-3009 Facilitator settlement) is verified.
+  const allowDirectTxHash = process.env.X402_ALLOW_DIRECT_TX_HASH !== "false";
 
   return {
     network,
@@ -165,6 +173,7 @@ export function getGateConfig() {
     facilitatorUrl,
     devBypassToken,
     maxTxAgeSeconds,
+    allowDirectTxHash,
   };
 }
 
@@ -442,6 +451,13 @@ export async function verifyX402Payment(
 
   // 2. Check if caller passed a direct on-chain Base transaction hash (0x + 64 hex chars)
   if (/^0x[a-fA-F0-9]{64}$/.test(trimmed)) {
+    if (!cfg.allowDirectTxHash) {
+      return {
+        verified: false,
+        error:
+          "Direct txHash redemption (Path A) is disabled. Please submit a standard x402 EIP-3009 signed payment payload (Path B).",
+      };
+    }
     const rpcVerify = await verifyDirectOnChainTxHash(trimmed, cfg);
     if (rpcVerify.verified) {
       return {
@@ -454,24 +470,45 @@ export async function verifyX402Payment(
     return { verified: false, error: rpcVerify.error };
   }
 
-  // 3. Verify and settle EIP-3009 off-chain signature against the x402 Facilitator
+  // 3. Verify and settle EIP-3009 off-chain signature against the x402 Facilitator (Path B)
   const challenge = buildX402Challenge(resourceUrl, description);
   const paymentRequirement = challenge.accepts[0];
+
+  let paymentPayload: Record<string, any> | undefined;
+  let paymentHeaderBase64 = trimmed;
+  try {
+    if (trimmed.startsWith("{")) {
+      paymentPayload = JSON.parse(trimmed) as Record<string, any>;
+      paymentHeaderBase64 = Buffer.from(trimmed, "utf-8").toString("base64");
+    } else {
+      const decoded = Buffer.from(trimmed, "base64").toString("utf-8");
+      paymentPayload = JSON.parse(decoded) as Record<string, any>;
+    }
+  } catch {
+    return {
+      verified: false,
+      error:
+        "Invalid X-PAYMENT header format: expected Base64-encoded x402 JSON paymentPayload.",
+    };
+  }
+
+  const facilitatorRequestBody = {
+    x402Version: paymentPayload?.x402Version || 1,
+    paymentHeader: paymentHeaderBase64,
+    paymentPayload,
+    paymentRequirements: paymentRequirement,
+  };
 
   try {
     const verifyRes = await fetch(`${cfg.facilitatorUrl}/verify`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        x402Version: 1,
-        paymentHeader: trimmed,
-        paymentRequirements: paymentRequirement,
-      }),
+      body: JSON.stringify(facilitatorRequestBody),
     });
 
     if (!verifyRes.ok) {
       const errText = await verifyRes.text().catch(() => "Facilitator verify error");
-      return { verified: false, error: `x402 verification failed: ${errText}` };
+      return { verified: false, error: `x402 verification failed (${verifyRes.status}): ${errText}` };
     }
 
     const verifyJson = (await verifyRes.json()) as {
@@ -488,29 +525,61 @@ export async function verifyX402Payment(
       };
     }
 
-    // Settle on-chain via facilitator
+    // Settle on-chain via facilitator — MUST succeed before releasing data
     const settleRes = await fetch(`${cfg.facilitatorUrl}/settle`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        x402Version: 1,
-        paymentHeader: trimmed,
-        paymentRequirements: paymentRequirement,
-      }),
+      body: JSON.stringify(facilitatorRequestBody),
     });
 
-    const settleJson = settleRes.ok
-      ? ((await settleRes.json()) as { txHash?: string; transaction?: string })
-      : {};
+    if (!settleRes.ok) {
+      const settleErrText = await settleRes.text().catch(() => "Facilitator settle error");
+      return {
+        verified: false,
+        error: `x402 on-chain settlement failed (${settleRes.status}): ${settleErrText}`,
+      };
+    }
+
+    const settleJson = (await settleRes.json()) as {
+      success?: boolean;
+      errorReason?: string;
+      error?: string;
+      txHash?: string;
+      transaction?: string;
+      tx_hash?: string;
+      payer?: string;
+    };
+
+    if (settleJson.success === false) {
+      return {
+        verified: false,
+        error:
+          settleJson.errorReason ||
+          settleJson.error ||
+          "x402 facilitator reported on-chain settlement failure",
+      };
+    }
+
+    const settledTxHash =
+      settleJson.transaction || settleJson.txHash || settleJson.tx_hash;
+    if (!settledTxHash) {
+      return {
+        verified: false,
+        error: "x402 facilitator did not return an on-chain transaction hash from /settle",
+      };
+    }
+
+    globalState.__x402RedeemedTxHashes!.add(settledTxHash.toLowerCase());
 
     return {
       verified: true,
-      payer: verifyJson.payer || "0xVerifiedAgentWallet",
+      payer:
+        settleJson.payer ||
+        verifyJson.payer ||
+        paymentPayload?.payload?.authorization?.from ||
+        "0xVerifiedAgentWallet",
       mode: "facilitator_onchain",
-      txHash:
-        settleJson.txHash ||
-        settleJson.transaction ||
-        `0xbase_${Date.now().toString(16)}`,
+      txHash: settledTxHash,
     };
   } catch (err: any) {
     return {

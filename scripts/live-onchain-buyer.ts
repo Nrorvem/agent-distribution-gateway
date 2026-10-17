@@ -1,38 +1,63 @@
 /**
- * Live Production On-Chain Buyer Script
+ * Live Production On-Chain Buyer Script (Supports Path B EIP-3009 & Path A txHash)
  *
  * Executes a real call against your live production gateway:
  *   https://agent-distribution-gateway.vercel.app/api/v1/enrich/person
  *
  * Step 1: Sends the enrichment request WITHOUT payment -> receives the live HTTP 402
  *         x402 challenge from Vercel.
- * Step 2: If you provide a settled Base USDC transaction hash (`TX_HASH=0x...`),
- *         retries the request with `X-PAYMENT: <TX_HASH>`, which our gateway verifies
- *         directly against the Base Mainnet RPC (`https://mainnet.base.org`),
- *         calls your live Apollo.io API, and records the real BaseScan txHash in
- *         your gateway's verifiable telemetry!
- *
- * Usage:
- *   # 1. Inspect the live HTTP 402 invoice from production:
- *   /opt/homebrew/bin/node --experimental-strip-types scripts/live-onchain-buyer.ts
- *
- *   # 2. Redeem an on-chain Base USDC transfer ($0.10 USDC to 0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC):
- *   TX_HASH=0xYourBaseTxHashHere /opt/homebrew/bin/node --experimental-strip-types scripts/live-onchain-buyer.ts
+ * Step 2:
+ *   - Path B (Standard Agent Flow — EIP-3009 Gasless Off-Chain Signature):
+ *     If `BUYER_PRIVATE_KEY` is set (in env or `.env.local`), signs a single-use
+ *     EIP-3009 `TransferWithAuthorization` voucher for $0.10 USDC on Base Mainnet
+ *     (requires $0.00 ETH gas!) and submits it in `X-PAYMENT`. Your gateway verifies
+ *     and settles the payment on-chain via `https://facilitator.payai.network` directly
+ *     into your Ledger wallet (`0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC`).
+ *   - Path A (Legacy Direct txHash):
+ *     If `TX_HASH=0x...` is provided, sends the raw txHash in `X-PAYMENT`.
  */
+
+import fs from "node:fs";
+import path from "node:path";
+import {
+  buildSignedX402PaymentHeader,
+  privateKeyToAddress,
+} from "../src/lib/eip3009-signer.ts";
+
+function loadEnvLocal(): Record<string, string> {
+  const envPath = path.resolve(process.cwd(), ".env.local");
+  const out: Record<string, string> = {};
+  if (fs.existsSync(envPath)) {
+    const content = fs.readFileSync(envPath, "utf-8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx > 0) {
+        const key = trimmed.slice(0, eqIdx).trim();
+        const val = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
+        out[key] = val;
+      }
+    }
+  }
+  return out;
+}
 
 const PRODUCTION_ENDPOINT =
   process.env.GATEWAY_ENDPOINT ||
   "https://agent-distribution-gateway.vercel.app/api/v1/enrich/person";
 
 async function main() {
+  const localEnv = loadEnvLocal();
   const payload = {
-    first_name: process.argv[2] || "Tim",
-    last_name: process.argv[3] || "Zheng",
-    domain: process.argv[4] || "apollo.io",
+    first_name: process.argv[2] || "Fidji",
+    last_name: process.argv[3] || "Simo",
+    domain: process.argv[4] || "instacart.com",
   };
 
   console.log("================================================================================");
   console.log(`🌐 CALLING LIVE PRODUCTION GATEWAY: ${PRODUCTION_ENDPOINT}`);
+  console.log(`👤 Target Profile: ${payload.first_name} ${payload.last_name} @ ${payload.domain}`);
   console.log("================================================================================\n");
 
   // 1. Send initial unpaid request to trigger HTTP 402 Payment Required challenge
@@ -58,36 +83,62 @@ async function main() {
   console.log(`   • Amount Required : $${reqTerms?.extra?.priceUsd} USDC (${reqTerms?.maxAmountRequired} atomic units)`);
   console.log(`   • Bazaar Discovery: discoverable=${Boolean(challengeData.extensions?.bazaar?.discoverable)}\n`);
 
+  const buyerPrivKey = process.env.BUYER_PRIVATE_KEY || localEnv.BUYER_PRIVATE_KEY || "";
   const txHash = process.env.TX_HASH || "";
-  if (!txHash) {
-    console.log("💡 TO COMPLETE YOUR FIRST REAL ON-CHAIN SALE:");
-    console.log("   Option A (Direct Base USDC Transfer — Zero Setup):");
-    console.log(`     1. Send $0.10 USDC on Base Mainnet to your Ledger address:`);
-    console.log(`        ${reqTerms?.payTo}`);
-    console.log("        (Tip: You can even send $0.10 USDC from your wallet to itself, or from any Base wallet!)");
-    console.log("     2. Copy the Base transaction hash (0x...) and run:");
-    console.log(`        TX_HASH=0xYourBaseTxHash /opt/homebrew/bin/node --experimental-strip-types scripts/live-onchain-buyer.ts\n`);
-    console.log("   Option B (Coinbase CDP Facilitator for x402 Bazaar Auto-Indexing):");
-    console.log("     1. Create a free CDP API Key at https://portal.cdp.coinbase.com");
-    console.log("     2. Add X402_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402 in Vercel");
-    console.log("     3. Call the endpoint using @x402/fetch or @coinbase/payments-mcp.");
+
+  if (buyerPrivKey) {
+    const buyerAddress = privateKeyToAddress(buyerPrivKey);
+    console.log("2️⃣  Path B (Standard x402 Agent Flow — EIP-3009 Gasless Signature):");
+    console.log(`   • Buyer Agent Wallet : ${buyerAddress}`);
+    console.log(`   • Paying To (Ledger) : ${reqTerms.payTo}`);
+    console.log(`   • Signing EIP-3009 TransferWithAuthorization ($${reqTerms?.extra?.priceUsd} USDC, 0 ETH gas)...`);
+
+    const signed = buildSignedX402PaymentHeader({
+      privateKeyHex: buyerPrivKey,
+      network: reqTerms.network || "base",
+      usdcAddress: reqTerms.asset,
+      payTo: reqTerms.payTo,
+      valueAtomic: String(reqTerms.maxAmountRequired),
+      tokenName: reqTerms.extra?.name || "USD Coin",
+      tokenVersion: reqTerms.extra?.version || "2",
+    });
+
+    console.log(`   • Nonce              : ${signed.paymentPayload.payload.authorization.nonce}`);
+    console.log(`   • Submitting X-PAYMENT header to ${PRODUCTION_ENDPOINT} ...\n`);
+
+    const paidRes = await fetch(PRODUCTION_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-PAYMENT": signed.headerBase64,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const paidData = await paidRes.json();
+    console.log(`   • Response Status : HTTP ${paidRes.status}\n`);
+    console.log(JSON.stringify(paidData, null, 2));
     return;
   }
 
-  // 2. Retry with X-PAYMENT header containing the on-chain txHash (or signed x402 proof)
-  console.log(`2️⃣  Retrying request with X-PAYMENT: ${txHash} ...`);
-  const paidRes = await fetch(PRODUCTION_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-PAYMENT": txHash,
-    },
-    body: JSON.stringify(payload),
-  });
+  if (txHash) {
+    console.log(`2️⃣  Path A: Retrying request with direct on-chain TX_HASH: ${txHash} ...`);
+    const paidRes = await fetch(PRODUCTION_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-PAYMENT": txHash,
+      },
+      body: JSON.stringify(payload),
+    });
 
-  const paidData = await paidRes.json();
-  console.log(`   • Response Status : HTTP ${paidRes.status}\n`);
-  console.log(JSON.stringify(paidData, null, 2));
+    const paidData = await paidRes.json();
+    console.log(`   • Response Status : HTTP ${paidRes.status}\n`);
+    console.log(JSON.stringify(paidData, null, 2));
+    return;
+  }
+
+  console.log("💡 No BUYER_PRIVATE_KEY or TX_HASH provided.");
 }
 
 main().catch((err) => {

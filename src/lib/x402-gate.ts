@@ -62,6 +62,7 @@ export interface AuditLogEntry {
 }
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 // Base Mainnet & Base Sepolia Official USDC Contracts
@@ -70,26 +71,72 @@ const USDC_CONTRACTS: Record<string, string> = {
   "base-sepolia": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
 };
 
-const AUDIT_LOG_FILE = path.resolve(process.cwd(), ".audit-logs.json");
+// Global in-memory state across warm invocations + /tmp fallback for read-only serverless (Vercel)
+const globalState = globalThis as unknown as {
+  __x402AuditLogs?: AuditLogEntry[];
+  __x402RedeemedTxHashes?: Set<string>;
+  __x402InFlightTxHashes?: Set<string>;
+};
+
+if (!globalState.__x402RedeemedTxHashes) {
+  globalState.__x402RedeemedTxHashes = new Set<string>();
+}
+if (!globalState.__x402InFlightTxHashes) {
+  globalState.__x402InFlightTxHashes = new Set<string>();
+}
+
+function getAuditLogFilePath(): string {
+  // On Vercel/AWS Lambda, process.cwd() (/var/task) is read-only; /tmp is writable.
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NODE_ENV === "production") {
+    return path.join(os.tmpdir(), "x402-audit-logs.json");
+  }
+  return path.resolve(process.cwd(), ".audit-logs.json");
+}
 
 function loadAuditLogsFromDisk(): AuditLogEntry[] {
+  if (globalState.__x402AuditLogs && globalState.__x402AuditLogs.length > 0) {
+    return globalState.__x402AuditLogs;
+  }
+  const filePath = getAuditLogFilePath();
   try {
-    if (fs.existsSync(AUDIT_LOG_FILE)) {
-      const raw = fs.readFileSync(AUDIT_LOG_FILE, "utf-8");
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, "utf-8");
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) {
+        globalState.__x402AuditLogs = parsed;
+        for (const entry of parsed) {
+          if (entry?.tx_hash) {
+            globalState.__x402RedeemedTxHashes!.add(entry.tx_hash.toLowerCase());
+          }
+        }
+        return parsed;
+      }
     }
   } catch {
-    // Ignore file read errors in serverless/edge environments
+    // Ignore file read errors
   }
+  globalState.__x402AuditLogs = [];
   return [];
 }
 
 function saveAuditLogsToDisk(logs: AuditLogEntry[]) {
+  globalState.__x402AuditLogs = logs;
+  for (const entry of logs) {
+    if (entry?.tx_hash) {
+      globalState.__x402RedeemedTxHashes!.add(entry.tx_hash.toLowerCase());
+    }
+  }
+  const filePath = getAuditLogFilePath();
   try {
-    fs.writeFileSync(AUDIT_LOG_FILE, JSON.stringify(logs, null, 2), "utf-8");
+    fs.writeFileSync(filePath, JSON.stringify(logs, null, 2), "utf-8");
   } catch {
-    // Ignore file write errors in read-only environments
+    // Fallback to os.tmpdir() if local cwd write failed
+    try {
+      const tmpFallback = path.join(os.tmpdir(), "x402-audit-logs.json");
+      fs.writeFileSync(tmpFallback, JSON.stringify(logs, null, 2), "utf-8");
+    } catch {
+      // Ignore
+    }
   }
 }
 
@@ -105,6 +152,9 @@ export function getGateConfig() {
     process.env.NODE_ENV === "production"
       ? ""
       : process.env.X402_DEV_BYPASS_TOKEN || "dev_test_payment_proof_2026";
+  // Maximum age of a direct on-chain txHash in seconds (default: 300s = 5 minutes)
+  // Prevents replaying historical transactions after a serverless cold start.
+  const maxTxAgeSeconds = parseInt(process.env.X402_MAX_TX_AGE_SECONDS || "300", 10);
 
   return {
     network,
@@ -114,6 +164,7 @@ export function getGateConfig() {
     asset: USDC_CONTRACTS[network] || USDC_CONTRACTS.base,
     facilitatorUrl,
     devBypassToken,
+    maxTxAgeSeconds,
   };
 }
 
@@ -177,10 +228,13 @@ const ERC20_TRANSFER_TOPIC0 =
 /**
  * Directly verifies a settled Base Mainnet / Base Sepolia USDC transaction hash via JSON-RPC.
  * Checks:
- * 1. Transaction receipt exists and status === "0x1" (succeeded)
- * 2. Emitted ERC-20 Transfer log from the official Base USDC contract
- * 3. Recipient (`to`) matches `cfg.payTo` (0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC)
- * 4. Amount transferred (`value`) >= `cfg.atomicUnits` (100000 = $0.10 USDC)
+ * 1. Replay & Race-Condition Protection: Ensures `txHash` is not already redeemed or in-flight
+ * 2. Transaction receipt exists and status === "0x1" (succeeded)
+ * 3. Block Timestamp Freshness: Rejects historical transactions older than `cfg.maxTxAgeSeconds` (default 300s)
+ *    so old transactions cannot be replayed after a serverless cold start
+ * 4. Emitted ERC-20 Transfer log from the official Base USDC contract
+ * 5. Recipient (`to`) matches `cfg.payTo` (0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC)
+ * 6. Amount transferred (`value`) >= `cfg.atomicUnits` (100000 = $0.10 USDC)
  */
 async function verifyDirectOnChainTxHash(
   txHash: string,
@@ -191,16 +245,24 @@ async function verifyDirectOnChainTxHash(
   txHash?: string;
   error?: string;
 }> {
+  const normalizedHash = txHash.toLowerCase();
   const rpcUrl = BASE_RPC_URLS[cfg.network] || BASE_RPC_URLS.base;
 
-  // Replay protection: ensure this txHash hasn't already been redeemed in recent logs
+  // 1. Replay & concurrent race-condition check
   const existingLogs = loadAuditLogsFromDisk();
-  if (existingLogs.some((l) => l.tx_hash?.toLowerCase() === txHash.toLowerCase())) {
+  if (
+    globalState.__x402RedeemedTxHashes!.has(normalizedHash) ||
+    globalState.__x402InFlightTxHashes!.has(normalizedHash) ||
+    existingLogs.some((l) => l.tx_hash?.toLowerCase() === normalizedHash)
+  ) {
     return {
       verified: false,
-      error: `Transaction hash ${txHash} has already been redeemed.`,
+      error: `Replay blocked: Transaction hash ${txHash} has already been redeemed for a previous request.`,
     };
   }
+
+  // Acquire atomic in-flight lock before async RPC call
+  globalState.__x402InFlightTxHashes!.add(normalizedHash);
 
   try {
     const rpcRes = await fetch(rpcUrl, {
@@ -215,12 +277,14 @@ async function verifyDirectOnChainTxHash(
     });
 
     if (!rpcRes.ok) {
+      globalState.__x402InFlightTxHashes!.delete(normalizedHash);
       return { verified: false, error: `Base RPC returned HTTP ${rpcRes.status}` };
     }
 
     const rpcData = (await rpcRes.json()) as {
       result?: {
         status?: string;
+        blockNumber?: string;
         from?: string;
         logs?: Array<{
           address?: string;
@@ -232,6 +296,7 @@ async function verifyDirectOnChainTxHash(
 
     const receipt = rpcData.result;
     if (!receipt) {
+      globalState.__x402InFlightTxHashes!.delete(normalizedHash);
       return {
         verified: false,
         error: `Transaction ${txHash} not found or not yet confirmed on ${cfg.network}.`,
@@ -239,10 +304,45 @@ async function verifyDirectOnChainTxHash(
     }
 
     if (receipt.status !== "0x1") {
+      globalState.__x402InFlightTxHashes!.delete(normalizedHash);
       return {
         verified: false,
         error: `Transaction ${txHash} failed on-chain (status=${receipt.status}).`,
       };
+    }
+
+    // 2. Verify on-chain block timestamp freshness to prevent cold-start replay of old transactions
+    if (receipt.blockNumber) {
+      const blockRes = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "eth_getBlockByNumber",
+          params: [receipt.blockNumber, false],
+        }),
+      });
+
+      if (blockRes.ok) {
+        const blockData = (await blockRes.json()) as {
+          result?: { timestamp?: string };
+        };
+        const blockTimestampHex = blockData.result?.timestamp;
+        if (blockTimestampHex) {
+          const blockTimestampSec = parseInt(blockTimestampHex, 16);
+          const nowSec = Math.floor(Date.now() / 1000);
+          const txAgeSec = nowSec - blockTimestampSec;
+
+          if (txAgeSec > cfg.maxTxAgeSeconds) {
+            globalState.__x402InFlightTxHashes!.delete(normalizedHash);
+            return {
+              verified: false,
+              error: `Replay blocked: Transaction ${txHash} expired (mined ${txAgeSec}s ago; max allowed age is ${cfg.maxTxAgeSeconds}s). Submit a fresh payment.`,
+            };
+          }
+        }
+      }
     }
 
     const expectedAsset = cfg.asset.toLowerCase();
@@ -260,6 +360,7 @@ async function verifyDirectOnChainTxHash(
     });
 
     if (!matchingLog) {
+      globalState.__x402InFlightTxHashes!.delete(normalizedHash);
       return {
         verified: false,
         error: `Transaction ${txHash} did not transfer at least $${cfg.priceUsd} USDC (${cfg.atomicUnits} units) to ${cfg.payTo} on ${cfg.network}.`,
@@ -270,12 +371,17 @@ async function verifyDirectOnChainTxHash(
     const payerAddress =
       fromTopic.length === 66 ? "0x" + fromTopic.slice(26) : receipt.from || "0xOnChainPayer";
 
+    // Mark as permanently redeemed BEFORE returning so it can never be reused
+    globalState.__x402RedeemedTxHashes!.add(normalizedHash);
+    globalState.__x402InFlightTxHashes!.delete(normalizedHash);
+
     return {
       verified: true,
       payer: payerAddress,
       txHash,
     };
   } catch (err: any) {
+    globalState.__x402InFlightTxHashes!.delete(normalizedHash);
     return {
       verified: false,
       error: `Failed to verify txHash on Base RPC: ${err?.message || String(err)}`,

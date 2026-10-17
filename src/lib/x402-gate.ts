@@ -89,8 +89,9 @@ export function getGateConfig() {
   const facilitatorUrl =
     process.env.X402_FACILITATOR_URL || "https://x402.org/facilitator";
   const devBypassToken =
-    process.env.X402_DEV_BYPASS_TOKEN ||
-    (process.env.NODE_ENV !== "production" ? "dev_test_payment_proof_2026" : "");
+    process.env.NODE_ENV === "production"
+      ? ""
+      : process.env.X402_DEV_BYPASS_TOKEN || "dev_test_payment_proof_2026";
 
   return {
     network,

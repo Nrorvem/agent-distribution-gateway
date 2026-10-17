@@ -1,0 +1,25 @@
+{
+  "name": "agent-distribution-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-front Agentic Commerce Distribution Gateway — Option A: Apollo.io Person Enrichment via MCP & x402",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test:apollo": "node --experimental-strip-types scripts/test-apollo-direct.ts",
+    "test:agent-buyer": "node --experimental-strip-types scripts/test-agent-buyer.ts"
+  },
+  "dependencies": {
+    "next": "^15.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.8.2"
+  }
+}

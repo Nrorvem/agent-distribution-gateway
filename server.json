@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.agent-distribution/apollo-person-enrichment",
+  "description": "Zero-signup B2B Person Enrichment & Verified Work Email Finder (Apollo.io) via x402 on Base ($0.10 USDC/call).",
+  "status": "active",
+  "version": "0.2.0",
+  "remotes": [
+    {
+      "transport_type": "streamable-http",
+      "url": "https://YOUR_VERCEL_DOMAIN.vercel.app/api/mcp"
+    }
+  ]
+}

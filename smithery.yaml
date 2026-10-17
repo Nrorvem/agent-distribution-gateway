@@ -1,0 +1,18 @@
+runtime: "container"
+type: "http"
+endpoint: "/api/mcp"
+name: "apollo-b2b-person-enrichment-x402"
+title: "Apollo.io B2B Person Enrichment & Work Email Finder (x402)"
+description: "Zero-signup B2B Person Enrichment, Work Email Lookup & LinkedIn-to-Email Resolver powered by Apollo.io. Pay per call ($0.10 USDC on Base via x402) with no API key or subscription required."
+tags:
+  - b2b-enrichment
+  - email-finder
+  - linkedin-to-email
+  - sales-intelligence
+  - apollo
+  - x402
+startCommand:
+  type: http
+  configSchema:
+    type: object
+    properties: {}

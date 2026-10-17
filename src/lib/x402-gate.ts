@@ -11,6 +11,8 @@
  *    executes the enrichment tool.
  */
 
+import { PERSON_ENRICH_JSON_SCHEMA } from "../verticals/option-a-apollo/schema.ts";
+
 export interface X402PaymentRequirement {
   scheme: "exact";
   network: "base" | "base-sepolia";
@@ -21,10 +23,12 @@ export interface X402PaymentRequirement {
   payTo: string;
   maxTimeoutSeconds: number;
   asset: string; // USDC contract address on Base
+  outputSchema?: Record<string, unknown>;
   extra: {
     name: string;
     version: string;
     priceUsd: string;
+    discoverable: boolean;
   };
 }
 
@@ -32,6 +36,15 @@ export interface X402ChallengePayload {
   x402Version: 1;
   error: string;
   accepts: X402PaymentRequirement[];
+  extensions?: {
+    bazaar?: {
+      discoverable: boolean;
+      name: string;
+      description: string;
+      inputSchema: Record<string, unknown>;
+      outputSchema: Record<string, unknown>;
+    };
+  };
 }
 
 export interface AuditLogEntry {
@@ -123,13 +136,32 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
         payTo: cfg.payTo,
         maxTimeoutSeconds: 60,
         asset: cfg.asset,
+        outputSchema: {
+          input: {
+            type: "http",
+            method: "POST",
+            bodyType: "json",
+            bodyFields: PERSON_ENRICH_JSON_SCHEMA.input.properties,
+          },
+          output: PERSON_ENRICH_JSON_SCHEMA.output,
+        },
         extra: {
           name: "USD Coin",
           version: "2",
           priceUsd: cfg.priceUsd,
+          discoverable: true,
         },
       },
     ],
+    extensions: {
+      bazaar: {
+        discoverable: true,
+        name: "Apollo.io B2B Person Enrichment & Verified Work Email Finder",
+        description,
+        inputSchema: PERSON_ENRICH_JSON_SCHEMA.input,
+        outputSchema: PERSON_ENRICH_JSON_SCHEMA.output,
+      },
+    },
   };
 }
 

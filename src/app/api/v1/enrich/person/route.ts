@@ -51,9 +51,10 @@ export async function GET(req: NextRequest) {
  * Zero-signup x402-gated Person Enrichment endpoint.
  */
 export async function POST(req: NextRequest) {
-  let body: unknown;
+  let body: unknown = {};
   try {
-    body = await req.json();
+    const text = await req.text();
+    body = text.trim() ? JSON.parse(text) : {};
   } catch {
     return NextResponse.json(
       { error: "Invalid JSON body." },
@@ -61,7 +62,30 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Step 1: Validate input schema BEFORE requesting payment so agents never pay for invalid inputs
+  const resourceUrl = req.nextUrl.toString();
+  const description = "Apollo.io Verified B2B Person Enrichment (1 profile lookup)";
+  const paymentHeader =
+    req.headers.get("x-payment") || req.headers.get("X-PAYMENT");
+
+  const isEmptyProbe =
+    body &&
+    typeof body === "object" &&
+    Object.keys(body as Record<string, unknown>).length === 0;
+
+  // If this is an empty-body discovery probe without X-PAYMENT (used by x402 Bazaar validators),
+  // immediately return the HTTP 402 Payment Required challenge + Bazaar schema metadata.
+  if (!paymentHeader && isEmptyProbe) {
+    const challenge = buildX402Challenge(resourceUrl, description);
+    return NextResponse.json(challenge, {
+      status: 402,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Protocol": "x402",
+      },
+    });
+  }
+
+  // Validate input schema BEFORE requesting payment so agents never pay for invalid inputs
   const validation = validatePersonEnrichInput(body);
   if (!validation.valid || !validation.data) {
     return NextResponse.json(
@@ -73,12 +97,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const resourceUrl = req.nextUrl.toString();
-  const description = "Apollo.io Verified B2B Person Enrichment (1 profile lookup)";
-  const paymentHeader =
-    req.headers.get("x-payment") || req.headers.get("X-PAYMENT");
-
-  // Step 2: If no X-PAYMENT header is attached, return HTTP 402 Payment Required
+  // If no X-PAYMENT header is attached, return HTTP 402 Payment Required
   if (!paymentHeader) {
     const challenge = buildX402Challenge(resourceUrl, description);
     return NextResponse.json(challenge, {

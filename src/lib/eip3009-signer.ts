@@ -206,6 +206,16 @@ export function signDigestSecp256k1(digest32: Buffer, privateKeyHex: string): st
   return `0x${rHex}${sHex}${vHex}`;
 }
 
+/**
+ * EIP-191 personal_sign (`\x19Ethereum Signed Message:\n<length><message>`)
+ */
+export function signPersonalMessage(message: string, privateKeyHex: string): string {
+  const msgBytes = Buffer.from(message, "utf-8");
+  const prefixBytes = Buffer.from(`\x19Ethereum Signed Message:\n${msgBytes.length}`, "utf-8");
+  const digest = keccak256(Buffer.concat([prefixBytes, msgBytes]));
+  return signDigestSecp256k1(digest, privateKeyHex);
+}
+
 // ============================================================================
 // 3. EIP-712 / EIP-3009 TransferWithAuthorization Signer for Base USDC
 // ============================================================================

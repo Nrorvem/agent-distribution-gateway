@@ -65,6 +65,7 @@ export interface AuditLogEntry {
   latency_ms: number;
 }
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -74,6 +75,92 @@ const USDC_CONTRACTS: Record<string, string> = {
   base: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
   "base-sepolia": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
 };
+
+const CDP_FACILITATOR_BASE_URL = "https://api.cdp.coinbase.com/platform/v2/x402";
+const PAYAI_FACILITATOR_BASE_URL = "https://facilitator.payai.network";
+
+/**
+ * Generates a short-lived Coinbase Developer Platform (CDP) Bearer JWT
+ * signed with EdDSA (Ed25519 64-byte base64 secret) or ES256 (EC PEM secret).
+ */
+export function buildCdpBearerJwt(params: {
+  apiKeyId: string;
+  apiKeySecret: string;
+  requestMethod: "GET" | "POST";
+  requestHost: string;
+  requestPath: string;
+}): string {
+  const { apiKeyId, apiKeySecret, requestMethod, requestHost, requestPath } = params;
+  const now = Math.floor(Date.now() / 1000);
+  const uri = `${requestMethod} ${requestHost}${requestPath}`;
+
+  if (apiKeySecret.includes("BEGIN EC PRIVATE KEY") || apiKeySecret.includes("BEGIN PRIVATE KEY")) {
+    const pem = apiKeySecret.replace(/\\n/g, "\n");
+    const privKey = crypto.createPrivateKey(pem);
+    const header = {
+      alg: "ES256",
+      typ: "JWT",
+      kid: apiKeyId,
+      nonce: crypto.randomBytes(16).toString("hex"),
+    };
+    const payload = {
+      sub: apiKeyId,
+      iss: "cdp",
+      aud: ["cdp_service"],
+      nbf: now,
+      exp: now + 120,
+      uri,
+      uris: [uri],
+    };
+    const signingInput =
+      Buffer.from(JSON.stringify(header)).toString("base64url") +
+      "." +
+      Buffer.from(JSON.stringify(payload)).toString("base64url");
+    const sig = crypto
+      .sign("sha256", Buffer.from(signingInput), {
+        key: privKey,
+        dsaEncoding: "ieee-p1363",
+      })
+      .toString("base64url");
+    return `${signingInput}.${sig}`;
+  }
+
+  // Ed25519 64-byte base64 key (first 32 bytes = seed d, last 32 bytes = public key x)
+  const raw = Buffer.from(apiKeySecret.trim(), "base64");
+  const seed = raw.subarray(0, 32);
+  const pub = raw.subarray(32, 64);
+  const privKey = crypto.createPrivateKey({
+    key: {
+      kty: "OKP",
+      crv: "Ed25519",
+      d: seed.toString("base64url"),
+      x: pub.toString("base64url"),
+    },
+    format: "jwk",
+  });
+
+  const header = {
+    alg: "EdDSA",
+    typ: "JWT",
+    kid: apiKeyId,
+    nonce: crypto.randomBytes(16).toString("hex"),
+  };
+  const payload = {
+    sub: apiKeyId,
+    iss: "cdp",
+    aud: ["cdp_service"],
+    nbf: now,
+    exp: now + 120,
+    uri,
+    uris: [uri],
+  };
+  const signingInput =
+    Buffer.from(JSON.stringify(header)).toString("base64url") +
+    "." +
+    Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.sign(null, Buffer.from(signingInput), privKey).toString("base64url");
+  return `${signingInput}.${sig}`;
+}
 
 // Global in-memory state across warm invocations + /tmp fallback for read-only serverless (Vercel)
 const globalState = globalThis as unknown as {
@@ -150,15 +237,23 @@ export function getGateConfig() {
   const atomicUnits = String(Math.round(parseFloat(priceUsd) * 1_000_000));
   const payTo =
     process.env.X402_WALLET_ADDRESS || "0x71C95911E9a5D330f4D621842EC243EE1343292e";
-  // On Base Mainnet ("base"), default to PayAI's public keyless x402 facilitator.
-  // Note: https://x402.org/facilitator only supports base-sepolia testnet and throws
-  // "No facilitator registered for scheme: exact and network: base" on Mainnet, so we
-  // automatically upgrade it to https://facilitator.payai.network when network === "base".
+
+  const cdpApiKeyId = (process.env.CDP_API_KEY_ID || "").trim();
+  const cdpApiKeySecret = (process.env.CDP_API_KEY_SECRET || "").trim();
+  const hasCdpCredentials = Boolean(cdpApiKeyId && cdpApiKeySecret);
+
   const envFacilitator = (process.env.X402_FACILITATOR_URL || "").trim().replace(/\/+$/, "");
+  // When CDP_API_KEY_ID & CDP_API_KEY_SECRET are present on Base Mainnet, default to
+  // Coinbase's Official CDP x402 Facilitator so every settlement auto-indexes into Coinbase Bazaar.
   const facilitatorUrl =
     network === "base" && (!envFacilitator || envFacilitator === "https://x402.org/facilitator")
-      ? "https://facilitator.payai.network"
+      ? hasCdpCredentials
+        ? CDP_FACILITATOR_BASE_URL
+        : PAYAI_FACILITATOR_BASE_URL
       : envFacilitator || "https://x402.org/facilitator";
+  const fallbackFacilitatorUrl =
+    network === "base" ? PAYAI_FACILITATOR_BASE_URL : "https://x402.org/facilitator";
+
   const devBypassToken =
     process.env.NODE_ENV === "production"
       ? ""
@@ -181,6 +276,10 @@ export function getGateConfig() {
     payTo,
     asset: USDC_CONTRACTS[network] || USDC_CONTRACTS.base,
     facilitatorUrl,
+    fallbackFacilitatorUrl,
+    cdpApiKeyId,
+    cdpApiKeySecret,
+    hasCdpCredentials,
     devBypassToken,
     maxTxAgeSeconds,
     allowDirectTxHash,
@@ -539,6 +638,12 @@ export async function verifyX402Payment(
         }
       : v2Requirement;
 
+  // Attach Bazaar discovery extension to paymentPayload if not already present so
+  // Coinbase's Official Facilitator indexes this resource into the x402 Bazaar catalog.
+  if (paymentPayload && !paymentPayload.extensions && challenge.extensions) {
+    paymentPayload.extensions = challenge.extensions;
+  }
+
   const facilitatorRequestBody = {
     x402Version: payloadVersion,
     paymentHeader: paymentHeaderBase64,
@@ -546,12 +651,48 @@ export async function verifyX402Payment(
     paymentRequirements,
   };
 
+  const buildFacilitatorHeaders = (
+    targetBaseUrl: string,
+    endpointSuffix: "/verify" | "/settle"
+  ): Record<string, string> => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (targetBaseUrl.includes("api.cdp.coinbase.com") && cfg.hasCdpCredentials) {
+      const parsedUrl = new URL(`${targetBaseUrl}${endpointSuffix}`);
+      const jwt = buildCdpBearerJwt({
+        apiKeyId: cfg.cdpApiKeyId,
+        apiKeySecret: cfg.cdpApiKeySecret,
+        requestMethod: "POST",
+        requestHost: parsedUrl.host,
+        requestPath: parsedUrl.pathname,
+      });
+      headers.Authorization = `Bearer ${jwt}`;
+    }
+    return headers;
+  };
+
   try {
-    const verifyRes = await fetch(`${cfg.facilitatorUrl}/verify`, {
+    let activeFacilitatorUrl = cfg.facilitatorUrl;
+    let verifyRes = await fetch(`${activeFacilitatorUrl}/verify`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: buildFacilitatorHeaders(activeFacilitatorUrl, "/verify"),
       body: JSON.stringify(facilitatorRequestBody),
     });
+
+    // If primary (CDP) facilitator fails with 4xx/5xx and we have a distinct fallback facilitator, retry on fallback
+    if (
+      !verifyRes.ok &&
+      cfg.fallbackFacilitatorUrl &&
+      cfg.fallbackFacilitatorUrl !== activeFacilitatorUrl
+    ) {
+      activeFacilitatorUrl = cfg.fallbackFacilitatorUrl;
+      verifyRes = await fetch(`${activeFacilitatorUrl}/verify`, {
+        method: "POST",
+        headers: buildFacilitatorHeaders(activeFacilitatorUrl, "/verify"),
+        body: JSON.stringify(facilitatorRequestBody),
+      });
+    }
 
     if (!verifyRes.ok) {
       const errText = await verifyRes.text().catch(() => "Facilitator verify error");
@@ -573,11 +714,24 @@ export async function verifyX402Payment(
     }
 
     // Settle on-chain via facilitator — MUST succeed before releasing data
-    const settleRes = await fetch(`${cfg.facilitatorUrl}/settle`, {
+    let settleRes = await fetch(`${activeFacilitatorUrl}/settle`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: buildFacilitatorHeaders(activeFacilitatorUrl, "/settle"),
       body: JSON.stringify(facilitatorRequestBody),
     });
+
+    if (
+      !settleRes.ok &&
+      cfg.fallbackFacilitatorUrl &&
+      cfg.fallbackFacilitatorUrl !== activeFacilitatorUrl
+    ) {
+      activeFacilitatorUrl = cfg.fallbackFacilitatorUrl;
+      settleRes = await fetch(`${activeFacilitatorUrl}/settle`, {
+        method: "POST",
+        headers: buildFacilitatorHeaders(activeFacilitatorUrl, "/settle"),
+        body: JSON.stringify(facilitatorRequestBody),
+      });
+    }
 
     if (!settleRes.ok) {
       const settleErrText = await settleRes.text().catch(() => "Facilitator settle error");

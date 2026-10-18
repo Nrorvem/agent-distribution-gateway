@@ -2,9 +2,15 @@ import type { Metadata } from "next";
 import React from "react";
 
 export const metadata: Metadata = {
-  title: "Agent Distribution Gateway — Option A: Apollo.io Broker",
+  title: "Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402)",
   description:
-    "Zero-signup, pay-per-call B2B Person Enrichment for AI agents via MCP & x402 on Base.",
+    "Zero-signup, pay-per-call B2B Person Enrichment, Executive Work Email Finder, and LinkedIn-to-Email Resolver powered by Apollo.io ($0.10 USDC on Base via x402).",
+  openGraph: {
+    title: "Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402)",
+    siteName: "Apollo.io B2B Person Enrichment & Verified Work Email Finder",
+    description:
+      "Zero-signup, pay-per-call B2B Person Enrichment, Executive Work Email Finder, and LinkedIn-to-Email Resolver powered by Apollo.io ($0.10 USDC on Base via x402).",
+  },
 };
 
 export default function RootLayout({

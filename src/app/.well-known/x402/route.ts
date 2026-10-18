@@ -20,7 +20,7 @@ export async function GET() {
     {
       x402Version: 2,
       seller: {
-        name: "Agent Distribution Gateway — Apollo.io B2B Person Enrichment",
+        name: "Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402)",
         description,
         url: PUBLIC_ORIGIN,
       },

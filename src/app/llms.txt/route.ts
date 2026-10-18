@@ -11,9 +11,9 @@ export async function GET(req: NextRequest) {
     process.env.NEXT_PUBLIC_GATEWAY_URL ||
     `${req.nextUrl.protocol}//${req.nextUrl.host}`;
 
-  const content = `# Agent Distribution Gateway — B2B Person Enrichment (Apollo.io Broker)
+  const content = `# Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402 + MCP)
 
-> Zero-signup, pay-per-call B2B Person Enrichment for autonomous AI agents. No account creation, monthly subscription, or API key required. Payment via \`x402\` (${cfg.priceUsd} USDC on ${cfg.network}) acts as authentication.
+> Zero-signup, pay-per-call B2B Person Enrichment for autonomous AI agents. No account creation, monthly subscription, or API key required. Payment via \`x402\` (${cfg.priceUsd} USDC on ${cfg.networkCaip2}) acts as authentication.
 
 ## Machine Discovery & Protocol Endpoints
 

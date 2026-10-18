@@ -58,10 +58,10 @@ export default function GatewayDashboard() {
             marginBottom: 12,
           }}
         >
-          MULTI-FRONT AGENT DISTRIBUTION GATEWAY • OPTION A LIVE
+          ZERO-SIGNUP B2B INTELLIGENCE • x402 v2 & MCP LIVE
         </div>
         <h1 style={{ margin: "0 0 8px 0", fontSize: 28, color: "#f8fafc" }}>
-          Apollo.io B2B Person Enrichment Broker (`x402` + `MCP`)
+          Apollo.io B2B Person Enrichment & Verified Work Email Finder
         </h1>
         <p style={{ margin: 0, color: "#94a3b8", lineHeight: 1.5 }}>
           Unbundling annual B2B data subscriptions into zero-signup, pay-per-execution (`$0.10 USDC` on Base)

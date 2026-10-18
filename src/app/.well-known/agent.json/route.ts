@@ -23,12 +23,12 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     schema_version: "a2a-1.0",
-    name: "Apollo.io B2B Person Enrichment & Verified Email Finder Broker",
+    name: "Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402)",
     description:
       "Zero-signup, pay-per-call B2B Person Enrichment, Executive Work Email Finder, and LinkedIn-to-Email Resolver powered by Apollo.io. Resolve (1) first_name + last_name + company domain/name, (2) LinkedIn profile URL, or (3) email into a deterministic JSON profile with verified work email, job title, seniority, firmographics (headcount, industry, founded year), and full employment history.",
     url: origin,
     provider: {
-      organization: "Agent Distribution Gateway",
+      organization: "Apollo.io B2B Enrichment Gateway",
       contact: "agent-ops@localhost",
     },
     version: "0.2.0",

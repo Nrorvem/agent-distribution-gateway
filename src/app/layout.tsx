@@ -5,6 +5,9 @@ export const metadata: Metadata = {
   title: "Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402)",
   description:
     "Zero-signup, pay-per-call B2B Person Enrichment, Executive Work Email Finder, and LinkedIn-to-Email Resolver powered by Apollo.io ($0.10 USDC on Base via x402).",
+  icons: {
+    icon: "/favicon.ico",
+  },
   openGraph: {
     title: "Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402)",
     siteName: "Apollo.io B2B Person Enrichment & Verified Work Email Finder",

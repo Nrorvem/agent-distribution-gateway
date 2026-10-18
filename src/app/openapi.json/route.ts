@@ -21,6 +21,9 @@ export async function GET() {
       version: "1.0.0",
       description:
         "Zero-signup, pay-per-call B2B Person Enrichment, Executive Work Email Finder, and LinkedIn-to-Email Resolver powered by Apollo.io. Settled per call ($0.10 USDC on Base Mainnet) via x402 v2.",
+      contact: {
+        email: "info@nrorvem.com",
+      },
       "x-guidance":
         "Use POST /api/v1/enrich/person to enrich a B2B professional profile and resolve their verified work email, job title, seniority, LinkedIn URL, and current employer via Apollo.io. Provide a JSON body containing at least one of: (1) linkedin_url, (2) email, or (3) first_name + last_name + domain (or organization_name). Calls without payment return an HTTP 402 x402 v2 challenge in the PAYMENT-REQUIRED header and JSON body ($0.10 USDC on Base Mainnet eip155:8453). Retry with your signed x402 payload in PAYMENT-SIGNATURE (or X-PAYMENT).",
     },

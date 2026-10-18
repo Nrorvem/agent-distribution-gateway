@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
     url: origin,
     provider: {
       organization: "Apollo.io B2B Enrichment Gateway",
-      contact: "agent-ops@localhost",
+      contact: "info@nrorvem.com",
     },
     version: "0.2.0",
     capabilities: {

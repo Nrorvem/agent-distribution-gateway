@@ -54,12 +54,22 @@ export async function GET(req: NextRequest) {
  * Zero-signup x402-gated Person Enrichment endpoint (supports x402 v2 & v1).
  */
 export async function POST(req: NextRequest) {
-  let body: unknown = {};
+  let body: Record<string, unknown> = {};
   try {
     const text = await req.text();
-    body = text.trim() ? JSON.parse(text) : {};
+    const parsed = text.trim() ? JSON.parse(text) : {};
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      body = parsed as Record<string, unknown>;
+    }
   } catch {
     body = {};
+  }
+
+  // Also merge URL query parameters as fallback if an agent passed identifiers in the query string
+  for (const [key, value] of req.nextUrl.searchParams.entries()) {
+    if (body[key] === undefined && value.trim().length > 0) {
+      body[key] = value;
+    }
   }
 
   const resourceUrl = req.nextUrl.toString();

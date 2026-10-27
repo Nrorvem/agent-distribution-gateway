@@ -149,30 +149,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (toolName === "enrich_person") {
-      // Validate input first before requiring payment
-      const validation = validatePersonEnrichInput(rawArgs);
-      if (!validation.valid || !validation.data) {
-        return NextResponse.json({
-          jsonrpc: "2.0",
-          id,
-          result: {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  error: validation.error,
-                  expected_schema: PERSON_ENRICH_JSON_SCHEMA.input,
-                }),
-              },
-            ],
-          },
-        });
-      }
-
       const resourceUrl = req.nextUrl.toString();
       const description = "MCP Tool Call: enrich_person (Apollo.io B2B Person Enrichment)";
       const paymentProof =
+        req.headers.get("payment-signature") ||
+        req.headers.get("PAYMENT-SIGNATURE") ||
         req.headers.get("x-payment") ||
         req.headers.get("X-PAYMENT") ||
         (typeof rawArgs._x402_payment === "string" ? rawArgs._x402_payment : null) ||
@@ -200,6 +181,27 @@ export async function POST(req: NextRequest) {
             headers: { "X-Payment-Protocol": "x402" },
           }
         );
+      }
+
+      // Validate input BEFORE settling payment so a paying agent is never charged on malformed input
+      const validation = validatePersonEnrichInput(rawArgs);
+      if (!validation.valid || !validation.data) {
+        return NextResponse.json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: validation.error,
+                  expected_schema: PERSON_ENRICH_JSON_SCHEMA.input,
+                }),
+              },
+            ],
+          },
+        });
       }
 
       const verification = await verifyX402Payment(

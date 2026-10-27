@@ -25,7 +25,7 @@ export async function GET() {
         email: "info@nrorvem.com",
       },
       "x-guidance":
-        "Use POST /api/v1/enrich/person to enrich a B2B professional profile and resolve their verified work email, job title, seniority, LinkedIn URL, and current employer via Apollo.io. Provide a JSON body containing at least one of: (1) linkedin_url, (2) email, or (3) first_name + last_name + domain (or organization_name). Calls without payment return an HTTP 402 x402 v2 challenge in the PAYMENT-REQUIRED header and JSON body ($0.10 USDC on Base Mainnet eip155:8453). Retry with your signed x402 payload in PAYMENT-SIGNATURE (or X-PAYMENT).",
+        "Use POST /api/v1/enrich/person to enrich a B2B professional profile and resolve their verified work email, job title, seniority, LinkedIn URL, and current employer via Apollo.io. Accepts flexible partial identifiers—provide any of: (1) linkedin_url (or linkedin), (2) email, (3) name (or first_name + last_name) with company/organization_name or domain (supports fuzzy company names like 'Meta' or 'Google' as well as domains like 'instacart.com'), or (4) Apollo person id. Calls without payment return an HTTP 402 x402 v2 challenge in the PAYMENT-REQUIRED header and JSON body ($0.10 USDC on Base Mainnet eip155:8453). Retry with your signed x402 payload in PAYMENT-SIGNATURE (or X-PAYMENT).",
     },
     servers: [
       {
@@ -54,14 +54,43 @@ export async function GET() {
               "application/json": {
                 schema: {
                   type: "object",
+                  description: PERSON_ENRICH_JSON_SCHEMA.input.description,
                   properties: PERSON_ENRICH_JSON_SCHEMA.input.properties,
-                  required: ["first_name", "last_name", "domain"],
-                  additionalProperties: false,
+                  additionalProperties: true,
                 },
                 example: {
                   first_name: "Fidji",
                   last_name: "Simo",
                   domain: "instacart.com",
+                },
+                examples: {
+                  by_name_and_domain: {
+                    summary: "Enrich by first/last name + domain",
+                    value: {
+                      first_name: "Fidji",
+                      last_name: "Simo",
+                      domain: "instacart.com",
+                    },
+                  },
+                  by_name_and_fuzzy_company: {
+                    summary: "Enrich by full name + fuzzy company name",
+                    value: {
+                      name: "Mark Zuckerberg",
+                      company: "Meta",
+                    },
+                  },
+                  by_linkedin_url: {
+                    summary: "Enrich by LinkedIn URL only",
+                    value: {
+                      linkedin_url: "https://www.linkedin.com/in/tim-zheng",
+                    },
+                  },
+                  by_email: {
+                    summary: "Reverse-enrich by email address only",
+                    value: {
+                      email: "tim@apollo.io",
+                    },
+                  },
                 },
               },
             },

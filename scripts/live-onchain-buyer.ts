@@ -94,6 +94,41 @@ async function main() {
     console.log("2️⃣  Path B (Standard x402 v2 Agent Flow — EIP-3009 Gasless Signature):");
     console.log(`   • Buyer Agent Wallet : ${buyerAddress}`);
     console.log(`   • Paying To (Ledger) : ${reqTerms.payTo}`);
+
+    // Pre-flight Base Mainnet USDC balance check
+    try {
+      const balCallData =
+        "0x70a08231" + buyerAddress.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+      const rpcRes = await fetch("https://mainnet.base.org", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_call",
+          params: [{ to: reqTerms.asset, data: balCallData }, "latest"],
+        }),
+      });
+      const rpcJson = (await rpcRes.json()) as { result?: string };
+      const buyerUsdcAtomic = BigInt(rpcJson.result || "0x0");
+      const buyerUsdcDisplay = (Number(buyerUsdcAtomic) / 1_000_000).toFixed(2);
+      console.log(`   • Buyer USDC Balance : $${buyerUsdcDisplay} USDC (${buyerUsdcAtomic.toString()} atomic units)`);
+
+      if (buyerUsdcAtomic < BigInt(atomicAmount)) {
+        console.log(
+          `\n⚠️  Insufficient Base Mainnet USDC in test buyer wallet (${buyerAddress}).`
+        );
+        console.log(
+          `   Required: $${usdDisplay} USDC (${atomicAmount} atomic units) | Available: $${buyerUsdcDisplay} USDC`
+        );
+        console.log(
+          `   👉 Send at least $${usdDisplay} USDC on Base Mainnet to ${buyerAddress} (it will settle right back into your Ledger ${reqTerms.payTo} via Coinbase CDP Facilitator) and re-run this script.\n`
+        );
+      }
+    } catch {
+      // Ignore RPC pre-flight check errors and proceed
+    }
+
     console.log(`   • Signing EIP-3009 TransferWithAuthorization ($${usdDisplay} USDC, 0 ETH gas)...`);
 
     const signed = buildSignedX402PaymentHeader({
@@ -106,6 +141,7 @@ async function main() {
       description: challengeData.resource?.description,
       tokenName: reqTerms.extra?.name || "USD Coin",
       tokenVersion: reqTerms.extra?.version || "2",
+      extensions: challengeData.extensions,
     });
 
     console.log(`   • Nonce              : ${signed.paymentPayload.payload.authorization.nonce}`);
@@ -121,9 +157,19 @@ async function main() {
       body: JSON.stringify(payload),
     });
 
-    const paidData = await paidRes.json();
+    const paidData = (await paidRes.json()) as Record<string, any>;
     console.log(`   • Response Status : HTTP ${paidRes.status}\n`);
     console.log(JSON.stringify(paidData, null, 2));
+
+    if (paidRes.status === 200) {
+      console.log("\n3️⃣  Verifying Coinbase CDP x402 Bazaar Discovery Indexing...");
+      const bazaarRes = await fetch(
+        `https://api.cdp.coinbase.com/platform/v2/x402/discovery/search?payTo=${reqTerms.payTo}`
+      );
+      const bazaarData = await bazaarRes.json();
+      console.log(`   • Bazaar Search Status : HTTP ${bazaarRes.status}`);
+      console.log(JSON.stringify(bazaarData, null, 2));
+    }
     return;
   }
 

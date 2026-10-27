@@ -255,6 +255,7 @@ export function buildSignedX402PaymentHeader(params: {
   tokenName?: string;
   tokenVersion?: string;
   validForSeconds?: number;
+  extensions?: Record<string, unknown>;
 }): {
   headerBase64: string;
   paymentPayload: Record<string, any>;
@@ -327,7 +328,7 @@ export function buildSignedX402PaymentHeader(params: {
     nonce,
   };
 
-  const paymentPayload = {
+  const paymentPayload: Record<string, any> = {
     x402Version: 2 as const,
     resource: {
       url:
@@ -355,6 +356,10 @@ export function buildSignedX402PaymentHeader(params: {
       authorization,
     },
   };
+
+  if (params.extensions) {
+    paymentPayload.extensions = params.extensions;
+  }
 
   const headerBase64 = Buffer.from(JSON.stringify(paymentPayload), "utf-8").toString(
     "base64"

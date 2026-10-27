@@ -154,6 +154,7 @@ export async function POST(req: NextRequest) {
         receipt_id: receipt.receipt_id,
         txHash: paymentResult.txHash,
         network: cfg.network,
+        facilitator: paymentResult.facilitator,
       })
     ).toString("base64");
 
@@ -166,6 +167,7 @@ export async function POST(req: NextRequest) {
           amount_usd: cfg.priceUsd,
           network: cfg.network,
           verification_mode: paymentResult.mode,
+          facilitator: paymentResult.facilitator,
         },
       },
       {

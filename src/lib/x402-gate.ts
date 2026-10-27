@@ -245,8 +245,12 @@ export function getGateConfig() {
   const envFacilitator = (process.env.X402_FACILITATOR_URL || "").trim().replace(/\/+$/, "");
   // When CDP_API_KEY_ID & CDP_API_KEY_SECRET are present on Base Mainnet, default to
   // Coinbase's Official CDP x402 Facilitator so every settlement auto-indexes into Coinbase Bazaar.
+  const isLegacyFacilitatorEnv =
+    !envFacilitator ||
+    envFacilitator === "https://x402.org/facilitator" ||
+    envFacilitator === PAYAI_FACILITATOR_BASE_URL;
   const facilitatorUrl =
-    network === "base" && (!envFacilitator || envFacilitator === "https://x402.org/facilitator")
+    network === "base" && isLegacyFacilitatorEnv
       ? hasCdpCredentials
         ? CDP_FACILITATOR_BASE_URL
         : PAYAI_FACILITATOR_BASE_URL
@@ -326,6 +330,7 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
             type: "http",
             method: "POST",
             bodyType: "json",
+            discoverable: true,
             body: {
               first_name: "Fidji",
               last_name: "Simo",
@@ -334,12 +339,72 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
           },
           output: {
             type: "json",
+            example: {
+              matched: true,
+              timestamp: "2026-10-17T23:00:39.000Z",
+              latency_ms: 420,
+              source: "apollo_live",
+              person: {
+                apollo_id: "64a1b2c3d4e5f60001234567",
+                full_name: "Fidji Simo",
+                title: "CEO & Chair",
+                seniority: "c_suite",
+                departments: ["c_suite"],
+                email: "fidji@instacart.com",
+                email_status: "verified",
+                linkedin_url: "https://www.linkedin.com/in/fidjisimo",
+                location: {
+                  city: "San Francisco",
+                  state: "California",
+                  country: "United States",
+                },
+                organization: {
+                  id: "5f1a2b3c4d5e6f0001112222",
+                  name: "Instacart",
+                  website_url: "https://www.instacart.com",
+                  primary_domain: "instacart.com",
+                  industry: "information technology & services",
+                  estimated_num_employees: 3000,
+                  linkedin_url: "https://www.linkedin.com/company/instacart",
+                  founded_year: 2012,
+                },
+                employment_history: [
+                  {
+                    title: "CEO & Chair",
+                    organization_name: "Instacart",
+                    start_date: "2021-08-01",
+                    end_date: null,
+                    current: true,
+                  },
+                ],
+              },
+            },
           },
         },
         schema: {
+          $schema: "https://json-schema.org/draft/2020-12/schema",
+          type: "object",
+          required: ["input"],
           properties: {
-            input: PERSON_ENRICH_JSON_SCHEMA.input,
-            output: PERSON_ENRICH_JSON_SCHEMA.output,
+            input: {
+              type: "object",
+              required: ["type", "method", "bodyType", "body"],
+              properties: {
+                type: { type: "string", const: "http" },
+                method: { type: "string", enum: ["POST"] },
+                bodyType: { type: "string", enum: ["json"] },
+                discoverable: { type: "boolean" },
+                body: PERSON_ENRICH_JSON_SCHEMA.input,
+              },
+            },
+            output: {
+              type: "object",
+              required: ["type"],
+              properties: {
+                type: { type: "string", const: "json" },
+                example: PERSON_ENRICH_JSON_SCHEMA.output,
+              },
+            },
           },
         },
       },
@@ -538,6 +603,7 @@ export async function verifyX402Payment(
   verified: boolean;
   payer?: string;
   mode?: "facilitator_onchain" | "dev_bypass_token";
+  facilitator?: string;
   txHash?: string;
   error?: string;
 }> {
@@ -638,10 +704,14 @@ export async function verifyX402Payment(
         }
       : v2Requirement;
 
-  // Attach Bazaar discovery extension to paymentPayload if not already present so
-  // Coinbase's Official Facilitator indexes this resource into the x402 Bazaar catalog.
-  if (paymentPayload && !paymentPayload.extensions && challenge.extensions) {
-    paymentPayload.extensions = challenge.extensions;
+  // Attach Bazaar discovery extension to paymentPayload and re-encode paymentHeaderBase64
+  // so Coinbase's Official Facilitator indexes this resource into the x402 Bazaar catalog.
+  if (paymentPayload && challenge.extensions) {
+    paymentPayload.extensions = {
+      ...(paymentPayload.extensions || {}),
+      ...challenge.extensions,
+    };
+    paymentHeaderBase64 = Buffer.from(JSON.stringify(paymentPayload), "utf-8").toString("base64");
   }
 
   const facilitatorRequestBody = {
@@ -672,6 +742,9 @@ export async function verifyX402Payment(
     return headers;
   };
 
+  const shouldFallbackOnStatus = (status: number): boolean =>
+    status === 401 || status === 403 || status === 404 || status === 429 || status >= 500;
+
   try {
     let activeFacilitatorUrl = cfg.facilitatorUrl;
     let verifyRes = await fetch(`${activeFacilitatorUrl}/verify`, {
@@ -680,9 +753,9 @@ export async function verifyX402Payment(
       body: JSON.stringify(facilitatorRequestBody),
     });
 
-    // If primary (CDP) facilitator fails with 4xx/5xx and we have a distinct fallback facilitator, retry on fallback
+    // Only fall back to secondary facilitator on auth/rate-limit/5xx errors, NOT on deterministic 400 payment rejections
     if (
-      !verifyRes.ok &&
+      shouldFallbackOnStatus(verifyRes.status) &&
       cfg.fallbackFacilitatorUrl &&
       cfg.fallbackFacilitatorUrl !== activeFacilitatorUrl
     ) {
@@ -694,22 +767,35 @@ export async function verifyX402Payment(
       });
     }
 
-    if (!verifyRes.ok) {
-      const errText = await verifyRes.text().catch(() => "Facilitator verify error");
-      return { verified: false, error: `x402 verification failed (${verifyRes.status}): ${errText}` };
-    }
-
-    const verifyJson = (await verifyRes.json()) as {
+    const verifyRawText = await verifyRes.text().catch(() => "");
+    let verifyJson: {
       isValid?: boolean;
       invalidReason?: string;
+      invalidMessage?: string;
       payer?: string;
-    };
-    if (!verifyJson.isValid) {
+    } | null = null;
+    try {
+      verifyJson = verifyRawText ? JSON.parse(verifyRawText) : null;
+    } catch {
+      verifyJson = null;
+    }
+
+    if (!verifyJson || typeof verifyJson.isValid !== "boolean") {
       return {
         verified: false,
-        error:
-          verifyJson.invalidReason ||
-          "Invalid x402 payment signature or insufficient USDC",
+        facilitator: activeFacilitatorUrl,
+        error: `x402 verification failed (${verifyRes.status}): ${verifyRawText || "Facilitator verify error"}`,
+      };
+    }
+
+    if (!verifyJson.isValid) {
+      const detail = [verifyJson.invalidReason, verifyJson.invalidMessage]
+        .filter(Boolean)
+        .join(" — ");
+      return {
+        verified: false,
+        facilitator: activeFacilitatorUrl,
+        error: detail || "Invalid x402 payment signature or insufficient USDC",
       };
     }
 
@@ -721,7 +807,7 @@ export async function verifyX402Payment(
     });
 
     if (
-      !settleRes.ok &&
+      shouldFallbackOnStatus(settleRes.status) &&
       cfg.fallbackFacilitatorUrl &&
       cfg.fallbackFacilitatorUrl !== activeFacilitatorUrl
     ) {
@@ -737,6 +823,7 @@ export async function verifyX402Payment(
       const settleErrText = await settleRes.text().catch(() => "Facilitator settle error");
       return {
         verified: false,
+        facilitator: activeFacilitatorUrl,
         error: `x402 on-chain settlement failed (${settleRes.status}): ${settleErrText}`,
       };
     }
@@ -754,6 +841,7 @@ export async function verifyX402Payment(
     if (settleJson.success === false) {
       return {
         verified: false,
+        facilitator: activeFacilitatorUrl,
         error:
           settleJson.errorReason ||
           settleJson.error ||
@@ -766,6 +854,7 @@ export async function verifyX402Payment(
     if (!settledTxHash) {
       return {
         verified: false,
+        facilitator: activeFacilitatorUrl,
         error: "x402 facilitator did not return an on-chain transaction hash from /settle",
       };
     }
@@ -780,6 +869,7 @@ export async function verifyX402Payment(
         paymentPayload?.payload?.authorization?.from ||
         "0xVerifiedAgentWallet",
       mode: "facilitator_onchain",
+      facilitator: activeFacilitatorUrl,
       txHash: settledTxHash,
     };
   } catch (err: any) {

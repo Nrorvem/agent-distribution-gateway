@@ -528,7 +528,20 @@ export const PERSON_ENRICH_JSON_SCHEMA = {
     type: "object",
     additionalProperties: true,
     description:
-      "B2B Person Enrichment & Verified Work Email Finder (Apollo.io): Accepts flexible partial person identifiers—such as (1) LinkedIn profile URL only ('linkedin_url' or 'linkedin'), (2) work or personal email only ('email' for reverse email lookup), (3) name ('name' or 'first_name' + 'last_name') with company domain OR fuzzy company name ('domain', 'organization_name', or 'company', e.g. 'Meta' or 'meta.com'), or (4) Apollo person ID ('id')—and resolves a deterministic B2B executive/prospect profile with verified work email, job title, seniority, department, location, company firmographics, and employment history.",
+      "B2B Person Enrichment & Verified Work Email Finder (Apollo.io): Accepts flexible partial person identifiers—such as (1) LinkedIn profile URL only ('linkedin_url' or 'linkedin'), (2) work or personal email only ('email' for reverse email lookup), (3) name ('name' or 'first_name' + 'last_name') with company domain OR fuzzy company name ('domain', 'organization_name', or 'company', e.g. 'Meta' or 'meta.com'), or (4) Apollo person ID ('id')—and resolves a deterministic B2B executive/prospect profile with verified work email, job title, seniority, department, location, company firmographics, and employment history. Free-on-Miss: only settles payment ($0.03 USDC) when a verified person and deliverable email are returned.",
+    anyOf: [
+      { required: ["linkedin_url"] },
+      { required: ["email"] },
+      { required: ["id"] },
+      { required: ["first_name", "last_name"] },
+      { required: ["name"] },
+      { required: ["first_name", "domain"] },
+      { required: ["first_name", "organization_name"] },
+      { required: ["first_name", "company"] },
+      { required: ["last_name", "domain"] },
+      { required: ["last_name", "organization_name"] },
+      { required: ["last_name", "company"] },
+    ],
     properties: {
       first_name: {
         type: "string",
@@ -585,7 +598,7 @@ export const PERSON_ENRICH_JSON_SCHEMA = {
   output: {
     type: "object",
     description:
-      "Deterministic B2B Person Profile & Firmographic Payload with cryptographic x402 payment receipt.",
+      "Deterministic B2B Person Profile & Firmographic Payload with cryptographic x402 payment receipt. Free on miss ($0.00 charged if no deliverable email is found).",
     required: ["matched", "timestamp", "latency_ms", "source", "person"],
     properties: {
       matched: {
@@ -596,28 +609,60 @@ export const PERSON_ENRICH_JSON_SCHEMA = {
       latency_ms: { type: "number", description: "End-to-end API execution latency in milliseconds." },
       source: { type: "string", enum: ["apollo_live", "apollo_mock"] },
       person: {
-        type: ["object", "null"],
+        type: "object",
+        nullable: true,
         description: "Hydrated prospect/executive record (or null if matched is false).",
         properties: {
           apollo_id: { type: "string", description: "Unique Apollo.io person identifier." },
-          full_name: { type: ["string", "null"], description: "Full formatted name." },
-          title: { type: ["string", "null"], description: "Current job title (e.g., 'Founder & CEO', 'VP of Engineering')." },
-          seniority: { type: ["string", "null"], description: "Normalized seniority level (e.g., 'founder', 'c_suite', 'vp', 'director', 'manager')." },
+          first_name: { type: "string", nullable: true, description: "First name." },
+          last_name: { type: "string", nullable: true, description: "Last name." },
+          full_name: { type: "string", nullable: true, description: "Full formatted name." },
+          title: { type: "string", nullable: true, description: "Current job title (e.g., 'Founder & CEO', 'VP of Engineering')." },
+          headline: { type: "string", nullable: true, description: "LinkedIn or professional headline." },
+          seniority: { type: "string", nullable: true, description: "Normalized seniority level (e.g., 'founder', 'c_suite', 'vp', 'director', 'manager')." },
           departments: { type: "array", items: { type: "string" }, description: "Functional departments (e.g., 'c_suite', 'engineering', 'sales')." },
-          email: { type: ["string", "null"], description: "Deliverable B2B work email address." },
+          email: { type: "string", nullable: true, description: "Deliverable B2B work email address." },
           email_status: { type: "string", description: "Deliverability verification status ('verified', 'likely_to_engage', 'unavailable')." },
-          linkedin_url: { type: ["string", "null"], description: "Canonical LinkedIn profile URL." },
+          linkedin_url: { type: "string", nullable: true, description: "Canonical LinkedIn profile URL." },
+          twitter_url: { type: "string", nullable: true, description: "Twitter/X profile URL." },
+          github_url: { type: "string", nullable: true, description: "GitHub profile URL." },
           location: {
             type: "object",
             description: "Geographic location (city, state, country) of the individual.",
+            properties: {
+              city: { type: "string", nullable: true },
+              state: { type: "string", nullable: true },
+              country: { type: "string", nullable: true },
+            },
           },
           organization: {
-            type: ["object", "null"],
+            type: "object",
+            nullable: true,
             description: "Current employer firmographics: company name, primary_domain, industry, estimated_num_employees (headcount), linkedin_url, and founded_year.",
+            properties: {
+              id: { type: "string", nullable: true },
+              name: { type: "string", nullable: true },
+              website_url: { type: "string", nullable: true },
+              primary_domain: { type: "string", nullable: true },
+              industry: { type: "string", nullable: true },
+              estimated_num_employees: { type: "number", nullable: true },
+              linkedin_url: { type: "string", nullable: true },
+              founded_year: { type: "number", nullable: true },
+            },
           },
           employment_history: {
             type: "array",
             description: "Chronological work history of current and past roles, companies, and start/end dates.",
+            items: {
+              type: "object",
+              properties: {
+                title: { type: "string", nullable: true },
+                organization_name: { type: "string", nullable: true },
+                start_date: { type: "string", nullable: true },
+                end_date: { type: "string", nullable: true },
+                current: { type: "boolean" },
+              },
+            },
           },
         },
       },

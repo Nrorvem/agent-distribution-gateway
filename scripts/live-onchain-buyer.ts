@@ -141,7 +141,6 @@ async function main() {
       description: challengeData.resource?.description,
       tokenName: reqTerms.extra?.name || "USD Coin",
       tokenVersion: reqTerms.extra?.version || "2",
-      extensions: challengeData.extensions,
     });
 
     console.log(`   • Nonce              : ${signed.paymentPayload.payload.authorization.nonce}`);
@@ -164,11 +163,18 @@ async function main() {
     if (paidRes.status === 200) {
       console.log("\n3️⃣  Verifying Coinbase CDP x402 Bazaar Discovery Indexing...");
       const bazaarRes = await fetch(
-        `https://api.cdp.coinbase.com/platform/v2/x402/discovery/search?payTo=${reqTerms.payTo}`
+        "https://api.cdp.coinbase.com/platform/v2/x402/discovery/search?query=agent-distribution-gateway.vercel.app"
       );
-      const bazaarData = await bazaarRes.json();
+      const bazaarData = (await bazaarRes.json()) as { resources?: Array<Record<string, any>> };
+      const matchedResources = (bazaarData.resources || []).filter((r) =>
+        r.accepts?.some(
+          (a: Record<string, any>) =>
+            String(a.payTo || "").toLowerCase() === String(reqTerms.payTo || "").toLowerCase()
+        )
+      );
       console.log(`   • Bazaar Search Status : HTTP ${bazaarRes.status}`);
-      console.log(JSON.stringify(bazaarData, null, 2));
+      console.log(`   • Indexed Resources    : ${matchedResources.length} matched for ${reqTerms.payTo}`);
+      console.log(JSON.stringify(matchedResources, null, 2));
     }
     return;
   }

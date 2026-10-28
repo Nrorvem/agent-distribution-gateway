@@ -11,12 +11,14 @@ export async function GET(req: NextRequest) {
     process.env.NEXT_PUBLIC_GATEWAY_URL ||
     `${req.nextUrl.protocol}//${req.nextUrl.host}`;
 
-  const content = `# Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402 + MCP)
+  const content = `# Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402 v2 + MCP)
 
-> Zero-signup, pay-per-call B2B Person Enrichment for autonomous AI agents. No account creation, monthly subscription, or API key required. Payment via \`x402\` (${cfg.priceUsd} USDC on ${cfg.networkCaip2}) acts as authentication.
+> Zero-signup, pay-per-match B2B Person Enrichment for autonomous AI agents. No account creation, monthly subscription, or API key required. Payment via \`x402 v2\` ($${cfg.priceUsd} USDC on ${cfg.networkCaip2}) acts as authentication — **Free-on-Miss**: your payment is verified first and ONLY settled on-chain when a verified person profile with a deliverable email is returned ($0.00 charged on misses).
 
 ## Machine Discovery & Protocol Endpoints
 
+- **OpenAPI 3.1.0 Spec**: ${origin}/openapi.json
+- **x402 Discovery Manifest**: ${origin}/.well-known/x402
 - **A2A Agent Card**: ${origin}/.well-known/agent.json
 - **MCP Server (Streamable HTTP)**: ${origin}/api/mcp
 - **Direct REST x402 Endpoint**: ${origin}/api/v1/enrich/person
@@ -33,8 +35,8 @@ export async function GET(req: NextRequest) {
    - **By Email Only (Reverse Lookup)**: \`{ "email": "tim@apollo.io" }\`
 3. **Handle HTTP 402 Challenge**:
    If no \`PAYMENT-SIGNATURE\` (or \`X-PAYMENT\`) header is present, the server responds with \`HTTP 402 Payment Required\` and an \`x402Version: 2\` challenge specifying \`${cfg.atomicUnits}\` atomic USDC units ($${cfg.priceUsd}) payable to \`${cfg.payTo}\` on \`${cfg.networkCaip2}\`.
-4. **Retry with Signed x402 Proof**:
-   Attach the signed USDC payment proof in the \`PAYMENT-SIGNATURE\` or \`X-PAYMENT\` header (or via \`x402-mcp\` / \`@coinbase/payments-mcp\`). The server settles the payment and returns the deterministic JSON profile + cryptographic receipt immediately.
+4. **Retry with Signed x402 Proof (Free-on-Miss)**:
+   Attach the signed USDC payment proof in the \`PAYMENT-SIGNATURE\` or \`X-PAYMENT\` header (or via \`x402-mcp\` / \`@coinbase/payments-mcp\`). The server verifies the signature, executes the Apollo lookup, and ONLY settles payment on-chain if a deliverable email is found ($0.00 charged on misses).
 `;
 
   return new NextResponse(content, {

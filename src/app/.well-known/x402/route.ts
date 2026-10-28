@@ -14,7 +14,7 @@ export async function GET() {
   const cfg = getGateConfig();
   const enrichUrl = `${PUBLIC_ORIGIN}/api/v1/enrich/person`;
   const description =
-    "Apollo.io B2B Person Enrichment & Verified Work Email Finder (Zero-Signup, Pay-Per-Call via x402 on Base)";
+    `Apollo.io B2B Person Enrichment & Verified Work Email Finder ($${cfg.priceUsd} USDC on Base — Free-on-Miss: $0.00 charged if no deliverable email is found)`;
 
   return NextResponse.json(
     {
@@ -41,6 +41,7 @@ export async function GET() {
           network: cfg.networkCaip2,
           networks: ["eip155:8453"],
           payTo: cfg.payTo,
+          freeOnMiss: true,
           facilitatorUrl: cfg.facilitatorUrl,
           inputSchema: PERSON_ENRICH_JSON_SCHEMA.input,
           outputSchema: PERSON_ENRICH_JSON_SCHEMA.output,

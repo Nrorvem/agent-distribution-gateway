@@ -7,6 +7,7 @@ import { enrichPersonWithApollo } from "@/verticals/option-a-apollo/connector";
 import {
   buildX402Challenge,
   verifyX402Payment,
+  settleVerifiedX402Payment,
   recordAuditLog,
   getGateConfig,
 } from "@/lib/x402-gate";
@@ -17,7 +18,7 @@ import {
  *
  * Exposes two tools to MCP clients (Claude Code, Cursor, Coinbase payments-mcp, x402-mcp):
  * 1. `get_enrichment_quote` (FREE) — Returns live pricing, SLA, and input/output schema.
- * 2. `enrich_person` (PAID: $0.10 USDC via x402) — Resolves partial person identifiers
+ * 2. `enrich_person` (PAID: $0.03 USDC via x402, Free-on-Miss) — Resolves partial person identifiers
  *    into a verified B2B profile via Apollo.io.
  */
 
@@ -25,7 +26,7 @@ const MCP_TOOLS = [
   {
     name: "get_enrichment_quote",
     description:
-      "FREE pre-flight discovery tool: Inspect live x402 pricing ($0.10 USDC on Base), deterministic JSON input/output schema, SLA latency telemetry, and recent verifiable Base settlement txHashes for Apollo.io B2B Person Enrichment & Work Email Lookup.",
+      "FREE pre-flight discovery tool: Inspect live x402 pricing ($0.03 USDC on Base, Free-on-Miss), deterministic JSON input/output schema, SLA latency telemetry, and recent verifiable Base settlement txHashes for Apollo.io B2B Person Enrichment & Work Email Lookup.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -34,7 +35,7 @@ const MCP_TOOLS = [
   {
     name: "enrich_person",
     description:
-      "PAID ($0.10 USDC via x402 on Base): Verified B2B Person Enrichment, Work Email Finder & LinkedIn-to-Email Resolver powered by Apollo.io. Accepts partial identifiers—(1) first_name + last_name + company domain or organization_name, (2) LinkedIn profile URL (linkedin_url), or (3) email (reverse email lookup)—and returns a deterministic JSON profile with deliverable work email, verification status, job title, seniority (founder, C-suite, VP, director), company firmographics (headcount, industry, founded year), and full employment history. Zero signup or API key required.",
+      "PAID ($0.03 USDC via x402 on Base — Free-on-Miss: $0.00 charged if no deliverable email is found): Verified B2B Person Enrichment, Work Email Finder & LinkedIn-to-Email Resolver powered by Apollo.io. Accepts partial identifiers—(1) first_name + last_name + company domain or organization_name, (2) LinkedIn profile URL (linkedin_url), or (3) email (reverse email lookup)—and returns a deterministic JSON profile with deliverable work email, verification status, job title, seniority (founder, C-suite, VP, director), company firmographics (headcount, industry, founded year), and full employment history. Zero signup or API key required.",
     inputSchema: {
       ...PERSON_ENRICH_JSON_SCHEMA.input,
       properties: {
@@ -55,11 +56,13 @@ export async function GET() {
     protocol: "mcp-streamable-http",
     serverInfo: {
       name: "agent-distribution-apollo-broker",
-      version: "0.1.0",
+      version: "0.2.0",
     },
     paymentProtocol: "x402",
-    network: cfg.network,
+    x402Version: 2,
+    network: cfg.networkCaip2,
     priceUsd: cfg.priceUsd,
+    freeOnMiss: true,
     tools: MCP_TOOLS,
   });
 }
@@ -93,7 +96,7 @@ export async function POST(req: NextRequest) {
         },
         serverInfo: {
           name: "agent-distribution-apollo-broker",
-          version: "0.1.0",
+          version: "0.2.0",
         },
       },
     });
@@ -132,7 +135,9 @@ export async function POST(req: NextRequest) {
                 {
                   tool: "enrich_person",
                   price_usd: cfg.priceUsd,
-                  network: cfg.network,
+                  free_on_miss: true,
+                  billing_policy: "Only settles payment when matched === true and a deliverable email is returned ($0.00 on miss)",
+                  network: cfg.networkCaip2,
                   asset_contract: cfg.asset,
                   recipient_wallet: cfg.payTo,
                   sla_p95_ms: 850,
@@ -150,7 +155,8 @@ export async function POST(req: NextRequest) {
 
     if (toolName === "enrich_person") {
       const resourceUrl = req.nextUrl.toString();
-      const description = "MCP Tool Call: enrich_person (Apollo.io B2B Person Enrichment)";
+      const description =
+        "MCP Tool Call: enrich_person (Apollo.io B2B Person Enrichment — $0.03 USDC on Match, Free on Miss)";
       const paymentProof =
         req.headers.get("payment-signature") ||
         req.headers.get("PAYMENT-SIGNATURE") ||
@@ -183,7 +189,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Validate input BEFORE settling payment so a paying agent is never charged on malformed input
+      // Validate input BEFORE verifying/settling payment so a paying agent is never charged on malformed input
       const validation = validatePersonEnrichInput(rawArgs);
       if (!validation.valid || !validation.data) {
         return NextResponse.json({
@@ -207,7 +213,8 @@ export async function POST(req: NextRequest) {
       const verification = await verifyX402Payment(
         paymentProof,
         resourceUrl,
-        description
+        description,
+        { verifyOnly: true }
       );
 
       if (!verification.verified) {
@@ -239,13 +246,89 @@ export async function POST(req: NextRequest) {
       }
 
       const enrichment = await enrichPersonWithApollo(validation.data);
+      const hasDeliverableEmail = Boolean(
+        enrichment.matched &&
+          enrichment.person?.email &&
+          enrichment.person.email.trim().length > 0 &&
+          enrichment.person.email_status !== "unavailable"
+      );
+
+      if (!hasDeliverableEmail) {
+        return NextResponse.json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    ...enrichment,
+                    payment_settled: false,
+                    receipt: {
+                      receipt_id: `miss_${Date.now()}`,
+                      tx_hash: null,
+                      amount_usd: "0.00",
+                      network: cfg.network,
+                      free_on_miss: true,
+                      note: "Free-on-Miss: No deliverable email found. Payment was verified but NOT settled on-chain ($0.00 charged).",
+                    },
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          },
+        });
+      }
+
+      let settledTxHash = verification.txHash;
+      let settledPayer = verification.payer;
+      if (verification.settlementContext) {
+        const settleResult = await settleVerifiedX402Payment(
+          verification.settlementContext
+        );
+        if (!settleResult.verified || !settleResult.settled) {
+          const challenge = buildX402Challenge(resourceUrl, description);
+          return NextResponse.json(
+            {
+              jsonrpc: "2.0",
+              id,
+              result: {
+                isError: true,
+                _meta: { x402: challenge },
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify(
+                      {
+                        ...challenge,
+                        error: settleResult.error || "On-chain payment settlement failed",
+                      },
+                      null,
+                      2
+                    ),
+                  },
+                ],
+              },
+            },
+            { status: 402 }
+          );
+        }
+        settledTxHash = settleResult.txHash;
+        settledPayer = settleResult.payer || settledPayer;
+      } else if (verification.mode === "dev_bypass_token" && !settledTxHash) {
+        settledTxHash = `0xsim_${Date.now().toString(16)}`;
+      }
+
       const receipt = recordAuditLog({
         vertical: "option-a-apollo",
         tool: "mcp:enrich_person",
-        payer: verification.payer || "unknown",
+        payer: settledPayer || "unknown",
         amount_usd: cfg.priceUsd,
         network: cfg.network,
-        tx_hash: verification.txHash || `0xsim_${Date.now().toString(16)}`,
+        tx_hash: settledTxHash || `0xsim_${Date.now().toString(16)}`,
         verification_mode: verification.mode || "dev_bypass_token",
         matched: enrichment.matched,
         latency_ms: enrichment.latency_ms,
@@ -261,11 +344,13 @@ export async function POST(req: NextRequest) {
               text: JSON.stringify(
                 {
                   ...enrichment,
+                  payment_settled: true,
                   receipt: {
                     receipt_id: receipt.receipt_id,
-                    tx_hash: verification.txHash,
+                    tx_hash: settledTxHash,
                     amount_usd: cfg.priceUsd,
                     network: cfg.network,
+                    free_on_miss: true,
                   },
                 },
                 null,

@@ -41,10 +41,12 @@ export interface X402ChallengePayload {
   extensions?: {
     bazaar?: {
       discoverable: boolean;
+      serviceName?: string;
       name: string;
       description: string;
-      inputSchema: Record<string, unknown>;
-      outputSchema: Record<string, unknown>;
+      tags?: string[];
+      inputSchema?: Record<string, unknown>;
+      outputSchema?: Record<string, unknown>;
       info?: Record<string, unknown>;
       schema?: Record<string, unknown>;
     };
@@ -233,7 +235,7 @@ function saveAuditLogsToDisk(logs: AuditLogEntry[]) {
 
 export function getGateConfig() {
   const network = (process.env.X402_NETWORK || "base") as "base" | "base-sepolia";
-  const priceUsd = process.env.X402_ENRICH_PRICE_USD || "0.10";
+  const priceUsd = process.env.X402_ENRICH_PRICE_USD || "0.03";
   const atomicUnits = String(Math.round(parseFloat(priceUsd) * 1_000_000));
   const payTo =
     process.env.X402_WALLET_ADDRESS || "0x71C95911E9a5D330f4D621842EC243EE1343292e";
@@ -298,7 +300,7 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
   return {
     x402Version: 2,
     error:
-      "Payment Required. Attach a signed x402 USDC payment payload in the PAYMENT-SIGNATURE (or X-PAYMENT) header.",
+      "Payment Required. Attach a signed x402 USDC payment payload in the PAYMENT-SIGNATURE (or X-PAYMENT) header. Free-on-Miss: your payment is ONLY settled on-chain if a verified person profile with a deliverable email is found ($0.00 charged on misses).",
     resource: {
       url: resourceUrl,
       description,
@@ -321,10 +323,18 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
     extensions: {
       bazaar: {
         discoverable: true,
+        serviceName: "Apollo.io B2B Person Enrichment & Verified Work Email Finder",
         name: "Apollo.io B2B Person Enrichment & Verified Work Email Finder",
         description,
-        inputSchema: PERSON_ENRICH_JSON_SCHEMA.input,
-        outputSchema: PERSON_ENRICH_JSON_SCHEMA.output,
+        tags: [
+          "b2b-enrichment",
+          "work-email-finder",
+          "linkedin-to-email",
+          "apollo",
+          "people-search",
+          "lead-enrichment",
+          "free-on-miss",
+        ],
         info: {
           input: {
             type: "http",
@@ -341,6 +351,7 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
             type: "json",
             example: {
               matched: true,
+              payment_settled: true,
               timestamp: "2026-10-17T23:00:39.000Z",
               latency_ms: 420,
               source: "apollo_live",
@@ -413,7 +424,25 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
 }
 
 export function encodePaymentRequiredHeader(challenge: X402ChallengePayload): string {
-  return Buffer.from(JSON.stringify(challenge), "utf-8").toString("base64");
+  // Keep HTTP header ultra-compact (~1.2 KB) well below Node.js undici / Nginx 8KB–16KB header limits,
+  // while the full `extensions.bazaar` schema envelope is served in the HTTP 402 JSON response body
+  // and attached to the Facilitator `/verify` and `/settle` POST payloads.
+  const compactChallenge: X402ChallengePayload = {
+    ...challenge,
+    extensions: challenge.extensions?.bazaar
+      ? {
+          bazaar: {
+            discoverable: true,
+            serviceName: challenge.extensions.bazaar.serviceName,
+            name: challenge.extensions.bazaar.name,
+            description: challenge.extensions.bazaar.description,
+            tags: challenge.extensions.bazaar.tags,
+            info: challenge.extensions.bazaar.info,
+          },
+        }
+      : undefined,
+  };
+  return Buffer.from(JSON.stringify(compactChallenge), "utf-8").toString("base64");
 }
 
 const BASE_RPC_URLS: Record<string, string> = {
@@ -589,23 +618,36 @@ async function verifyDirectOnChainTxHash(
   }
 }
 
+export interface X402PendingSettlementContext {
+  activeFacilitatorUrl: string;
+  facilitatorRequestBody: Record<string, any>;
+  payer?: string;
+}
+
 /**
- * Verifies the incoming `X-PAYMENT` header against:
+ * Verifies the incoming `X-PAYMENT` / `PAYMENT-SIGNATURE` header against:
  * 1. The local dev bypass proof (only in non-production environments)
  * 2. A direct on-chain Base USDC transaction hash (`0x...`, verified via Base Mainnet RPC)
- * 3. An x402 EIP-3009 cryptographic signature verified & settled via the x402 Facilitator
+ * 3. An x402 EIP-3009 cryptographic signature verified via the x402 Facilitator
+ *
+ * When `options.verifyOnly === true` (used for 2-Phase "Free-on-Miss" execution),
+ * `/verify` is executed to confirm signature validity and USDC balance, while `/settle`
+ * is deferred to `settleVerifiedX402Payment()` until upstream data matches.
  */
 export async function verifyX402Payment(
   paymentHeader: string | null,
   resourceUrl: string,
-  description: string
+  description: string,
+  options?: { verifyOnly?: boolean }
 ): Promise<{
   verified: boolean;
+  settled?: boolean;
   payer?: string;
   mode?: "facilitator_onchain" | "dev_bypass_token";
   facilitator?: string;
   txHash?: string;
   error?: string;
+  settlementContext?: X402PendingSettlementContext;
 }> {
   if (!paymentHeader || !paymentHeader.trim()) {
     return { verified: false, error: "Missing X-PAYMENT header" };
@@ -618,9 +660,10 @@ export async function verifyX402Payment(
   if (cfg.devBypassToken && trimmed === cfg.devBypassToken) {
     return {
       verified: true,
+      settled: !options?.verifyOnly,
       payer: "0xAgentBuyerLocalTestWallet",
       mode: "dev_bypass_token",
-      txHash: `0xsim_${Date.now().toString(16)}`,
+      txHash: options?.verifyOnly ? undefined : `0xsim_${Date.now().toString(16)}`,
     };
   }
 
@@ -631,9 +674,12 @@ export async function verifyX402Payment(
       if (parsed && parsed.devBypassToken === cfg.devBypassToken) {
         return {
           verified: true,
+          settled: !options?.verifyOnly,
           payer: parsed.payer || "0xAgentBuyerLocalTestWallet",
           mode: "dev_bypass_token",
-          txHash: parsed.txHash || `0xsim_${Date.now().toString(16)}`,
+          txHash: options?.verifyOnly
+            ? undefined
+            : parsed.txHash || `0xsim_${Date.now().toString(16)}`,
         };
       }
     } catch {
@@ -654,6 +700,7 @@ export async function verifyX402Payment(
     if (rpcVerify.verified) {
       return {
         verified: true,
+        settled: true,
         payer: rpcVerify.payer,
         mode: "facilitator_onchain",
         txHash: rpcVerify.txHash,
@@ -662,7 +709,7 @@ export async function verifyX402Payment(
     return { verified: false, error: rpcVerify.error };
   }
 
-  // 3. Verify and settle EIP-3009 off-chain signature against the x402 Facilitator (Path B)
+  // 3. Verify (and optionally settle) EIP-3009 off-chain signature against the x402 Facilitator (Path B)
   const challenge = buildX402Challenge(resourceUrl, description);
   const v2Requirement = challenge.accepts[0];
 
@@ -799,7 +846,83 @@ export async function verifyX402Payment(
       };
     }
 
-    // Settle on-chain via facilitator — MUST succeed before releasing data
+    const verifiedPayer =
+      verifyJson.payer ||
+      paymentPayload?.payload?.authorization?.from ||
+      "0xVerifiedAgentWallet";
+
+    const settlementContext: X402PendingSettlementContext = {
+      activeFacilitatorUrl,
+      facilitatorRequestBody,
+      payer: verifiedPayer,
+    };
+
+    // If running in 2-Phase "Free-on-Miss" mode, return verified status now without settling on-chain yet.
+    if (options?.verifyOnly) {
+      return {
+        verified: true,
+        settled: false,
+        payer: verifiedPayer,
+        mode: "facilitator_onchain",
+        facilitator: activeFacilitatorUrl,
+        settlementContext,
+      };
+    }
+
+    return await settleVerifiedX402Payment(settlementContext);
+  } catch (err: any) {
+    return {
+      verified: false,
+      error: `Facilitator unreachable or rejected proof: ${err?.message || String(err)}`,
+    };
+  }
+}
+
+/**
+ * Phase 2 of the "Free-on-Miss" x402 payment flow:
+ * Executes on-chain `/settle` via the x402 Facilitator ONLY after upstream supply
+ * has resolved a verified match and deliverable email.
+ */
+export async function settleVerifiedX402Payment(
+  context: X402PendingSettlementContext
+): Promise<{
+  verified: boolean;
+  settled: boolean;
+  payer?: string;
+  mode: "facilitator_onchain";
+  facilitator: string;
+  txHash?: string;
+  error?: string;
+}> {
+  const cfg = getGateConfig();
+  let { activeFacilitatorUrl } = context;
+  const { facilitatorRequestBody } = context;
+
+  const buildFacilitatorHeaders = (
+    targetBaseUrl: string,
+    endpointSuffix: "/verify" | "/settle"
+  ): Record<string, string> => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (targetBaseUrl.includes("api.cdp.coinbase.com") && cfg.hasCdpCredentials) {
+      const parsedUrl = new URL(`${targetBaseUrl}${endpointSuffix}`);
+      const jwt = buildCdpBearerJwt({
+        apiKeyId: cfg.cdpApiKeyId,
+        apiKeySecret: cfg.cdpApiKeySecret,
+        requestMethod: "POST",
+        requestHost: parsedUrl.host,
+        requestPath: parsedUrl.pathname,
+      });
+      headers.Authorization = `Bearer ${jwt}`;
+    }
+    return headers;
+  };
+
+  const shouldFallbackOnStatus = (status: number): boolean =>
+    status === 401 || status === 403 || status === 404 || status === 429 || status >= 500;
+
+  try {
     let settleRes = await fetch(`${activeFacilitatorUrl}/settle`, {
       method: "POST",
       headers: buildFacilitatorHeaders(activeFacilitatorUrl, "/settle"),
@@ -823,6 +946,8 @@ export async function verifyX402Payment(
       const settleErrText = await settleRes.text().catch(() => "Facilitator settle error");
       return {
         verified: false,
+        settled: false,
+        mode: "facilitator_onchain",
         facilitator: activeFacilitatorUrl,
         error: `x402 on-chain settlement failed (${settleRes.status}): ${settleErrText}`,
       };
@@ -841,6 +966,8 @@ export async function verifyX402Payment(
     if (settleJson.success === false) {
       return {
         verified: false,
+        settled: false,
+        mode: "facilitator_onchain",
         facilitator: activeFacilitatorUrl,
         error:
           settleJson.errorReason ||
@@ -854,6 +981,8 @@ export async function verifyX402Payment(
     if (!settledTxHash) {
       return {
         verified: false,
+        settled: false,
+        mode: "facilitator_onchain",
         facilitator: activeFacilitatorUrl,
         error: "x402 facilitator did not return an on-chain transaction hash from /settle",
       };
@@ -863,11 +992,8 @@ export async function verifyX402Payment(
 
     return {
       verified: true,
-      payer:
-        settleJson.payer ||
-        verifyJson.payer ||
-        paymentPayload?.payload?.authorization?.from ||
-        "0xVerifiedAgentWallet",
+      settled: true,
+      payer: settleJson.payer || context.payer || "0xVerifiedAgentWallet",
       mode: "facilitator_onchain",
       facilitator: activeFacilitatorUrl,
       txHash: settledTxHash,
@@ -875,7 +1001,10 @@ export async function verifyX402Payment(
   } catch (err: any) {
     return {
       verified: false,
-      error: `Facilitator unreachable or rejected proof: ${err?.message || String(err)}`,
+      settled: false,
+      mode: "facilitator_onchain",
+      facilitator: activeFacilitatorUrl,
+      error: `Facilitator settlement error: ${err?.message || String(err)}`,
     };
   }
 }

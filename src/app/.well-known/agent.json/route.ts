@@ -25,35 +25,39 @@ export async function GET(req: NextRequest) {
     schema_version: "a2a-1.0",
     name: "Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402)",
     description:
-      "Zero-signup, pay-per-call B2B Person Enrichment, Executive Work Email Finder, and LinkedIn-to-Email Resolver powered by Apollo.io. Resolve (1) first_name + last_name + company domain/name, (2) LinkedIn profile URL, or (3) email into a deterministic JSON profile with verified work email, job title, seniority, firmographics (headcount, industry, founded year), and full employment history.",
+      `Zero-signup, pay-per-match B2B Person Enrichment, Executive Work Email Finder, and LinkedIn-to-Email Resolver powered by Apollo.io ($${cfg.priceUsd} USDC on Base Mainnet via x402 v2 — Free-on-Miss: $0.00 charged if no deliverable email is found). Resolve (1) first_name + last_name + company domain/name, (2) LinkedIn profile URL, or (3) email into a deterministic JSON profile with verified work email, job title, seniority, firmographics (headcount, industry, founded year), and full employment history.`,
     url: origin,
     provider: {
       organization: "Apollo.io B2B Enrichment Gateway",
       contact: "info@nrorvem.com",
     },
-    version: "0.2.0",
+    version: "0.3.0",
     capabilities: {
       streaming: false,
       pushNotifications: false,
       stateTransitionHistory: true,
       zeroSignupExecution: true,
       prePaymentInputValidation: true,
+      freeOnMiss: true,
     },
     authentication: {
       schemes: ["x402"],
       credentialsRequired: false,
       description:
-        "Payment IS the credential. Send requests directly to /api/v1/enrich/person or /api/mcp; settle the HTTP 402 challenge with USDC on Base via the X-PAYMENT header.",
+        "Payment IS the credential. Send requests directly to /api/v1/enrich/person or /api/mcp; settle the HTTP 402 challenge with USDC on Base via the PAYMENT-SIGNATURE (or X-PAYMENT) header. Free-on-Miss: payment is only settled on-chain when a deliverable email is returned.",
     },
     paymentRails: [
       {
         protocol: "x402",
-        version: 1,
-        network: cfg.network,
+        version: 2,
+        x402Version: 2,
+        network: cfg.networkCaip2,
+        legacyNetwork: cfg.network,
         asset: cfg.asset,
         symbol: "USDC",
         priceUsd: cfg.priceUsd,
-        maxAmountRequiredAtomic: cfg.atomicUnits,
+        amountAtomic: cfg.atomicUnits,
+        freeOnMiss: true,
         recipientWallet: cfg.payTo,
         facilitatorUrl: cfg.facilitatorUrl,
       },
@@ -61,14 +65,15 @@ export async function GET(req: NextRequest) {
     endpoints: {
       mcp: `${origin}/api/mcp`,
       rest_enrich_person: `${origin}/api/v1/enrich/person`,
+      openapi_json: `${origin}/openapi.json`,
       llms_txt: `${origin}/llms.txt`,
     },
     skills: [
       {
         id: "b2b-person-enrichment",
-        name: "Verified B2B Person Enrichment & Work Email Lookup",
+        name: "Verified B2B Person Enrichment & Work Email Lookup (Free-on-Miss)",
         description:
-          "Hydrates partial person identifiers (name + domain, LinkedIn URL, or reverse email) into a verified B2B executive/prospect profile via Apollo.io /api/v1/people/match. Strictly disables phone reveal surcharges to maintain low flat-rate pricing.",
+          "Hydrates partial person identifiers (name + domain/company, LinkedIn URL, or reverse email) into a verified B2B executive/prospect profile via Apollo.io /api/v1/people/match. Free-on-Miss: only settles payment ($0.03 USDC) when a deliverable email is returned.",
         tags: [
           "b2b-enrichment",
           "work-email-finder",
@@ -80,6 +85,7 @@ export async function GET(req: NextRequest) {
           "sales-intelligence",
           "apollo",
           "x402",
+          "free-on-miss",
           "mcp",
         ],
         matchingIntents: [
@@ -89,10 +95,11 @@ export async function GET(req: NextRequest) {
           "Look up B2B lead contact details without an Apollo or ZoomInfo subscription",
         ],
         pricing: {
-          model: "per_call",
+          model: "per_match_free_on_miss",
           amount: cfg.priceUsd,
           currency: "USDC",
-          network: cfg.network,
+          network: cfg.networkCaip2,
+          freeOnMiss: true,
         },
         sla: {
           p95LatencyMs: 850,
@@ -100,6 +107,7 @@ export async function GET(req: NextRequest) {
           uptimeTarget: "99.9%",
           attributeCompletenessTarget: "95%+",
           fulfillmentSuccessRate: telemetry.fulfillmentSuccessRate,
+          freeOnMiss: true,
           recentCompletedTransactions: telemetry.totalCompletedTransactions,
           verifiedOnChainSettlements: telemetry.verifiedOnChainSettlements,
           recentSettlementTxHashes: telemetry.recentSettlementTxHashes,

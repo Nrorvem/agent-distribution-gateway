@@ -64,7 +64,7 @@ export default function GatewayDashboard() {
           Apollo.io B2B Person Enrichment & Verified Work Email Finder
         </h1>
         <p style={{ margin: 0, color: "#94a3b8", lineHeight: 1.5 }}>
-          Unbundling annual B2B data subscriptions into zero-signup, pay-per-execution (`$0.10 USDC` on Base)
+          Unbundling annual B2B data subscriptions into zero-signup, pay-per-match (`$0.03 USDC` on Base — Free-on-Miss)
           endpoints for autonomous AI agents.
         </p>
       </header>
@@ -218,7 +218,7 @@ export default function GatewayDashboard() {
                 checked={attachPayment}
                 onChange={(e) => setAttachPayment(e.target.checked)}
               />
-              Attach signed <code>X-PAYMENT</code> proof ($0.10 USDC)
+              Attach signed <code>X-PAYMENT</code> proof ($0.03 USDC — Free on Miss)
             </label>
 
             <button

@@ -460,7 +460,7 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
                     title: "CEO & Chair",
                     organization_name: "Instacart",
                     start_date: "2021-08-01",
-                    end_date: null,
+                    end_date: "present",
                     current: true,
                   },
                 ],

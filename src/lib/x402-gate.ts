@@ -40,10 +40,10 @@ export interface X402ChallengePayload {
   accepts: X402PaymentRequirement[];
   extensions?: {
     bazaar?: {
-      discoverable: boolean;
+      discoverable?: boolean;
       serviceName?: string;
-      name: string;
-      description: string;
+      name?: string;
+      description?: string;
       tags?: string[];
       inputSchema?: Record<string, unknown>;
       outputSchema?: Record<string, unknown>;
@@ -293,6 +293,95 @@ export function getGateConfig() {
 }
 
 /**
+ * Compact, standards-compliant JSON Schema Draft-07 / 2020-12 for `extensions.bazaar.schema`
+ * that includes all input/output properties, `anyOf` rules, and non-null primitive types
+ * while keeping the Base64-encoded `PAYMENT-REQUIRED` HTTP header under 6.5 KB (well below
+ * Node.js undici's 16 KB max header limit).
+ */
+const BAZAAR_COMPACT_INPUT_BODY_SCHEMA = {
+  type: "object",
+  additionalProperties: true,
+  description:
+    "Provide at least one identifier: linkedin_url, email, id, name, or first_name + last_name + domain/organization_name/company. Free-on-Miss ($0.03 USDC settled only when deliverable email found).",
+  anyOf: PERSON_ENRICH_JSON_SCHEMA.input.anyOf,
+  properties: {
+    first_name: { type: "string", description: "First name (e.g., 'Fidji')." },
+    last_name: { type: "string", description: "Last name (e.g., 'Simo')." },
+    name: { type: "string", description: "Full name (e.g., 'Fidji Simo')." },
+    domain: { type: "string", description: "Company domain (e.g., 'instacart.com')." },
+    organization_name: { type: "string", description: "Company name (e.g., 'Instacart')." },
+    company: { type: "string", description: "Company name or domain alias." },
+    email: { type: "string", description: "Work or personal email for reverse lookup." },
+    linkedin_url: { type: "string", description: "Public LinkedIn profile URL." },
+    id: { type: "string", description: "Apollo.io person ID." },
+    reveal_personal_emails: { type: "boolean", description: "Include personal emails if work email unavailable." },
+  },
+};
+
+const BAZAAR_COMPACT_OUTPUT_EXAMPLE_SCHEMA = {
+  type: "object",
+  required: ["matched", "timestamp", "latency_ms", "source", "person"],
+  properties: {
+    matched: { type: "boolean", description: "True if verified person matched." },
+    payment_settled: { type: "boolean", description: "False ($0.00 charged) on miss." },
+    timestamp: { type: "string" },
+    latency_ms: { type: "number" },
+    source: { type: "string", enum: ["apollo_live", "apollo_mock"] },
+    person: {
+      type: "object",
+      description: "Hydrated B2B profile (null on miss).",
+      properties: {
+        apollo_id: { type: "string" },
+        first_name: { type: "string" },
+        last_name: { type: "string" },
+        full_name: { type: "string" },
+        title: { type: "string" },
+        headline: { type: "string" },
+        seniority: { type: "string" },
+        departments: { type: "array", items: { type: "string" } },
+        email: { type: "string", description: "Verified work email address." },
+        email_status: { type: "string" },
+        linkedin_url: { type: "string" },
+        location: {
+          type: "object",
+          properties: {
+            city: { type: "string" },
+            state: { type: "string" },
+            country: { type: "string" },
+          },
+        },
+        organization: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            name: { type: "string" },
+            website_url: { type: "string" },
+            primary_domain: { type: "string" },
+            industry: { type: "string" },
+            estimated_num_employees: { type: "number" },
+            linkedin_url: { type: "string" },
+            founded_year: { type: "number" },
+          },
+        },
+        employment_history: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              organization_name: { type: "string" },
+              start_date: { type: "string" },
+              end_date: { type: "string" },
+              current: { type: "boolean" },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+/**
  * Generates the standard x402 v2 HTTP 402 Payment Required challenge payload.
  */
 export function buildX402Challenge(resourceUrl: string, description: string): X402ChallengePayload {
@@ -322,19 +411,6 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
     ],
     extensions: {
       bazaar: {
-        discoverable: true,
-        serviceName: "Apollo.io B2B Person Enrichment & Verified Work Email Finder",
-        name: "Apollo.io B2B Person Enrichment & Verified Work Email Finder",
-        description,
-        tags: [
-          "b2b-enrichment",
-          "work-email-finder",
-          "linkedin-to-email",
-          "apollo",
-          "people-search",
-          "lead-enrichment",
-          "free-on-miss",
-        ],
         info: {
           input: {
             type: "http",
@@ -395,7 +471,7 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
         schema: {
           $schema: "https://json-schema.org/draft/2020-12/schema",
           type: "object",
-          required: ["input"],
+          required: ["input", "output"],
           properties: {
             input: {
               type: "object",
@@ -405,15 +481,15 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
                 method: { type: "string", enum: ["POST"] },
                 bodyType: { type: "string", enum: ["json"] },
                 discoverable: { type: "boolean" },
-                body: PERSON_ENRICH_JSON_SCHEMA.input,
+                body: BAZAAR_COMPACT_INPUT_BODY_SCHEMA,
               },
             },
             output: {
               type: "object",
-              required: ["type"],
+              required: ["type", "example"],
               properties: {
                 type: { type: "string", const: "json" },
-                example: PERSON_ENRICH_JSON_SCHEMA.output,
+                example: BAZAAR_COMPACT_OUTPUT_EXAMPLE_SCHEMA,
               },
             },
           },
@@ -424,25 +500,7 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
 }
 
 export function encodePaymentRequiredHeader(challenge: X402ChallengePayload): string {
-  // Keep HTTP header ultra-compact (~1.2 KB) well below Node.js undici / Nginx 8KB–16KB header limits,
-  // while the full `extensions.bazaar` schema envelope is served in the HTTP 402 JSON response body
-  // and attached to the Facilitator `/verify` and `/settle` POST payloads.
-  const compactChallenge: X402ChallengePayload = {
-    ...challenge,
-    extensions: challenge.extensions?.bazaar
-      ? {
-          bazaar: {
-            discoverable: true,
-            serviceName: challenge.extensions.bazaar.serviceName,
-            name: challenge.extensions.bazaar.name,
-            description: challenge.extensions.bazaar.description,
-            tags: challenge.extensions.bazaar.tags,
-            info: challenge.extensions.bazaar.info,
-          },
-        }
-      : undefined,
-  };
-  return Buffer.from(JSON.stringify(compactChallenge), "utf-8").toString("base64");
+  return Buffer.from(JSON.stringify(challenge), "utf-8").toString("base64");
 }
 
 const BASE_RPC_URLS: Record<string, string> = {

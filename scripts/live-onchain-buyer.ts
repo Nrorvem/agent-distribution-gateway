@@ -84,7 +84,12 @@ async function main() {
   console.log(`   • USDC Contract   : ${reqTerms?.asset}`);
   console.log(`   • Pay To Wallet   : ${reqTerms?.payTo}`);
   console.log(`   • Amount Required : $${usdDisplay} USDC (${atomicAmount} atomic units)`);
-  console.log(`   • Bazaar Discovery: discoverable=${Boolean(challengeData.extensions?.bazaar?.discoverable)}\n`);
+  console.log(
+    `   • Bazaar Discovery: discoverable=${Boolean(
+      challengeData.extensions?.bazaar?.info?.input?.discoverable ||
+        challengeData.extensions?.bazaar?.discoverable
+    )}\n`
+  );
 
   const buyerPrivKey = process.env.BUYER_PRIVATE_KEY || localEnv.BUYER_PRIVATE_KEY || "";
   const txHash = process.env.TX_HASH || "";

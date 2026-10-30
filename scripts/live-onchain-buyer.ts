@@ -44,16 +44,22 @@ function loadEnvLocal(): Record<string, string> {
   return out;
 }
 
+const args = process.argv.slice(2);
+const urlFlagIdx = args.indexOf("--url");
+const endpointFromArgs = urlFlagIdx !== -1 && args[urlFlagIdx + 1] ? args[urlFlagIdx + 1] : undefined;
+const positionalArgs = args.filter((a, i) => a !== "--url" && (urlFlagIdx === -1 || i !== urlFlagIdx + 1));
+
 const PRODUCTION_ENDPOINT =
+  endpointFromArgs ||
   process.env.GATEWAY_ENDPOINT ||
-  "https://agent-distribution-gateway.vercel.app/api/v1/enrich/person";
+  "https://enrichmatch.dev/api/v1/enrich/person";
 
 async function main() {
   const localEnv = loadEnvLocal();
   const payload = {
-    first_name: process.argv[2] || "Fidji",
-    last_name: process.argv[3] || "Simo",
-    domain: process.argv[4] || "instacart.com",
+    first_name: positionalArgs[0] || "Fidji",
+    last_name: positionalArgs[1] || "Simo",
+    domain: positionalArgs[2] || "instacart.com",
   };
 
   console.log("================================================================================");

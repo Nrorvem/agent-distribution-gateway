@@ -234,12 +234,72 @@ function saveAuditLogsToDisk(logs: AuditLogEntry[]) {
   }
 }
 
-export function getGateConfig() {
+/**
+ * Resolves the canonical public gateway origin for incoming HTTP requests.
+ * Supports both the primary custom domain (`https://enrichmatch.dev`) and the
+ * legacy deployment origin (`https://agent-distribution-gateway.vercel.app`).
+ */
+export function resolveGatewayOrigin(
+  req?:
+    | Request
+    | {
+        headers?: Headers | Record<string, string | null | undefined>;
+        nextUrl?: { origin?: string; host?: string; protocol?: string };
+      }
+    | null
+): string {
+  const defaultOrigin =
+    process.env.PUBLIC_GATEWAY_ORIGIN || "https://enrichmatch.dev";
+
+  if (!req) return defaultOrigin;
+
+  let rawHost = "";
+  let rawProto = "https";
+
+  if ("nextUrl" in req && req.nextUrl) {
+    if (req.nextUrl.host) rawHost = req.nextUrl.host;
+    if (req.nextUrl.protocol) rawProto = req.nextUrl.protocol.replace(/:$/, "");
+  }
+
+  if (!rawHost && "headers" in req && req.headers) {
+    const getHeader = (key: string): string | null => {
+      if (typeof (req.headers as any).get === "function") {
+        return (req.headers as Headers).get(key);
+      }
+      return (req.headers as Record<string, string | null | undefined>)[key] || null;
+    };
+    rawHost = getHeader("x-forwarded-host") || getHeader("host") || "";
+    const protoHeader = getHeader("x-forwarded-proto");
+    if (protoHeader) rawProto = protoHeader.split(",")[0].trim();
+  }
+
+  if (!rawHost) return defaultOrigin;
+
+  const hostLower = rawHost.toLowerCase().trim();
+  if (
+    hostLower.includes("agent-distribution-gateway.vercel.app") ||
+    hostLower.includes("vercel.app")
+  ) {
+    return `https://${hostLower}`;
+  }
+
+  if (hostLower.includes("enrichmatch.dev")) {
+    return `https://${hostLower}`;
+  }
+
+  if (hostLower.startsWith("localhost") || hostLower.startsWith("127.0.0.1")) {
+    return `${rawProto}://${hostLower}`;
+  }
+
+  return defaultOrigin;
+}
+
+export function getGateConfig(targetOrigin?: string) {
   const network = (process.env.X402_NETWORK || "base") as "base" | "base-sepolia";
   const priceUsd = process.env.X402_ENRICH_PRICE_USD || "0.03";
   const atomicUnits = String(Math.round(parseFloat(priceUsd) * 1_000_000));
   const payTo =
-    process.env.X402_WALLET_ADDRESS || "0x71C95911E9a5D330f4D621842EC243EE1343292e";
+    process.env.X402_WALLET_ADDRESS || "0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC";
 
   const cdpApiKeyId = (process.env.CDP_API_KEY_ID || "").trim();
   const cdpApiKeySecret = (process.env.CDP_API_KEY_SECRET || "").trim();
@@ -276,23 +336,67 @@ export function getGateConfig() {
     network === "base" ? "eip155:8453" : "eip155:84532";
 
   const publicOrigin =
-    process.env.PUBLIC_GATEWAY_ORIGIN || "https://agent-distribution-gateway.vercel.app";
-  const ownershipProofEnv = (
-    process.env.X402_OWNERSHIP_PROOF ||
+    targetOrigin ||
+    process.env.PUBLIC_GATEWAY_ORIGIN ||
+    "https://enrichmatch.dev";
+
+  // Multi-domain ownership proof map (domain/host -> EIP-191 personal_sign signature)
+  const proofMap: Record<string, string> = {};
+  let ownershipProofs: string[] = [];
+
+  const rawProofsEnv = (
     process.env.X402_OWNERSHIP_PROOFS ||
+    process.env.X402_OWNERSHIP_PROOF ||
     ""
   ).trim();
-  let ownershipProofs: string[] = [];
-  if (ownershipProofEnv) {
+
+  if (rawProofsEnv) {
     try {
-      if (ownershipProofEnv.startsWith("[")) {
-        const parsed = JSON.parse(ownershipProofEnv);
-        ownershipProofs = Array.isArray(parsed) ? parsed.map(String) : [String(parsed)];
+      if (rawProofsEnv.startsWith("{")) {
+        const parsedMap = JSON.parse(rawProofsEnv);
+        for (const [k, v] of Object.entries(parsedMap)) {
+          if (typeof v === "string" && v.startsWith("0x")) {
+            proofMap[k.toLowerCase()] = v;
+          }
+        }
+      } else if (rawProofsEnv.startsWith("[")) {
+        const parsedArr = JSON.parse(rawProofsEnv);
+        ownershipProofs = Array.isArray(parsedArr) ? parsedArr.map(String) : [String(parsedArr)];
       } else {
-        ownershipProofs = ownershipProofEnv.split(",").map((s) => s.trim()).filter(Boolean);
+        ownershipProofs = rawProofsEnv.split(",").map((s) => s.trim()).filter(Boolean);
       }
     } catch {
-      ownershipProofs = [ownershipProofEnv];
+      ownershipProofs = [rawProofsEnv];
+    }
+  }
+
+  // Fallback single proof (e.g. from existing X402_OWNERSHIP_PROOF)
+  const legacyProof = (process.env.X402_OWNERSHIP_PROOF || "").trim();
+  if (legacyProof && legacyProof.startsWith("0x")) {
+    proofMap["agent-distribution-gateway.vercel.app"] =
+      proofMap["agent-distribution-gateway.vercel.app"] || legacyProof;
+    if (!ownershipProofs.includes(legacyProof)) {
+      ownershipProofs.push(legacyProof);
+    }
+  }
+
+  // Prioritize the matching signature for the target host
+  const hostKey = publicOrigin.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
+  const matchedProof =
+    proofMap[hostKey] ||
+    proofMap[publicOrigin.toLowerCase()] ||
+    (hostKey.includes("enrichmatch") ? proofMap["enrichmatch.dev"] : undefined) ||
+    (hostKey.includes("vercel.app") ? proofMap["agent-distribution-gateway.vercel.app"] : undefined);
+
+  if (matchedProof) {
+    ownershipProofs = [
+      matchedProof,
+      ...ownershipProofs.filter((p) => p !== matchedProof),
+      ...Object.values(proofMap).filter((p) => p !== matchedProof),
+    ];
+  } else {
+    for (const p of Object.values(proofMap)) {
+      if (!ownershipProofs.includes(p)) ownershipProofs.push(p);
     }
   }
 

@@ -11,6 +11,7 @@ import {
   settleVerifiedX402Payment,
   recordAuditLog,
   getGateConfig,
+  resolveGatewayOrigin,
 } from "@/lib/x402-gate";
 
 /**
@@ -19,8 +20,9 @@ import {
  * so visiting agents can inspect the schema for free before invoking POST.
  */
 export async function GET(req: NextRequest) {
-  const cfg = getGateConfig();
-  const resourceUrl = req.nextUrl.toString();
+  const origin = resolveGatewayOrigin(req);
+  const cfg = getGateConfig(origin);
+  const resourceUrl = `${origin}/api/v1/enrich/person`;
 
   return NextResponse.json({
     service: "option-a-apollo-person-enrichment",
@@ -81,7 +83,8 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const resourceUrl = req.nextUrl.toString();
+  const origin = resolveGatewayOrigin(req);
+  const resourceUrl = `${origin}/api/v1/enrich/person`;
   const description =
     "Apollo.io Verified B2B Person Enrichment & Work Email Finder ($0.03 USDC on Match — Free on Miss)";
   const paymentHeader =

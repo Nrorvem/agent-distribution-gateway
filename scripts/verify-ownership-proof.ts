@@ -14,8 +14,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { recoverPersonalSignAddress } from "../src/lib/eip3009-signer.ts";
 
-const PUBLIC_ORIGIN =
-  process.env.PUBLIC_GATEWAY_ORIGIN || "https://agent-distribution-gateway.vercel.app";
 const EXPECTED_MERCHANT = "0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC";
 
 function loadEnvLocal(): Record<string, string> {
@@ -50,8 +48,8 @@ function saveProofToEnvLocal(proof: string) {
   console.log(`✅ Saved X402_OWNERSHIP_PROOF to .env.local`);
 }
 
-async function triggerX402ScanReindex() {
-  console.log(`\n🔄 Triggering live re-discovery & verification on x402scan...`);
+async function triggerX402ScanReindex(targetOrigin: string) {
+  console.log(`\n🔄 Triggering live re-discovery & verification on x402scan for: ${targetOrigin}`);
   try {
     const res = await fetch(
       "https://www.x402scan.com/api/trpc/public.resources.registerFromOrigin?batch=1",
@@ -61,7 +59,7 @@ async function triggerX402ScanReindex() {
         body: JSON.stringify({
           "0": {
             json: {
-              origin: PUBLIC_ORIGIN,
+              origin: targetOrigin,
             },
           },
         }),
@@ -69,7 +67,7 @@ async function triggerX402ScanReindex() {
     );
     const data = await res.json();
     console.log(`• x402scan Response:`, JSON.stringify(data, null, 2));
-    console.log(`\nInspect live status at: https://www.x402scan.com/server/05a538fc-1188-4410-99a4-460feb103765`);
+    console.log(`\nInspect live status on x402scan!`);
   } catch (err: any) {
     console.error(`❌ Failed to trigger x402scan reindex:`, err.message);
   }
@@ -79,8 +77,15 @@ async function main() {
   const args = process.argv.slice(2);
   const env = loadEnvLocal();
 
+  const originArg = args.find((a) => a.startsWith("http://") || a.startsWith("https://"));
+  const targetOrigin =
+    originArg ||
+    process.env.PUBLIC_GATEWAY_ORIGIN ||
+    env.PUBLIC_GATEWAY_ORIGIN ||
+    "https://enrichmatch.dev";
+
   if (args.includes("--refresh") || args.includes("--sync")) {
-    await triggerX402ScanReindex();
+    await triggerX402ScanReindex(targetOrigin);
     return;
   }
 
@@ -91,26 +96,24 @@ async function main() {
     console.log(`=================================================================`);
     console.log(`x402scan Ownership Proof Verifier`);
     console.log(`=================================================================`);
-    console.log(`\nTarget Origin to sign : ${PUBLIC_ORIGIN}`);
+    console.log(`\nTarget Origin to sign : ${targetOrigin}`);
     console.log(`Expected Signer Wallet: ${EXPECTED_MERCHANT} (Ledger Nano S Plus)\n`);
     console.log(`How to generate the proof:`);
-    console.log(`1. Open your browser wallet (MetaMask / Rabby connected to Ledger)`);
-    console.log(`   or open the helper: scripts/sign-ledger.html`);
-    console.log(`2. Sign the exact message:`);
-    console.log(`   ${PUBLIC_ORIGIN}`);
-    console.log(`3. Run this script with the resulting signature:`);
-    console.log(`   /opt/homebrew/bin/node --experimental-strip-types scripts/verify-ownership-proof.ts <0x_signature>\n`);
+    console.log(`1. Run scripts/serve-signer.ts:`);
+    console.log(`   /opt/homebrew/bin/node --experimental-strip-types scripts/serve-signer.ts ${targetOrigin}`);
+    console.log(`2. Connect Ledger in browser and approve:`);
+    console.log(`   ${targetOrigin}\n`);
     return;
   }
 
   console.log(`=================================================================`);
   console.log(`Verifying Ownership Proof`);
   console.log(`=================================================================`);
-  console.log(`• Signed Message : ${PUBLIC_ORIGIN}`);
+  console.log(`• Signed Message : ${targetOrigin}`);
   console.log(`• Signature      : ${signature}`);
 
   try {
-    const recovered = recoverPersonalSignAddress(PUBLIC_ORIGIN, signature);
+    const recovered = recoverPersonalSignAddress(targetOrigin, signature);
     console.log(`• Recovered Signer: ${recovered}`);
     console.log(`• Expected Signer : ${EXPECTED_MERCHANT}`);
 

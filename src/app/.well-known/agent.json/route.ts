@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PERSON_ENRICH_JSON_SCHEMA } from "@/verticals/option-a-apollo/schema";
-import { getGateConfig, getVerifiableTelemetrySummary } from "@/lib/x402-gate";
+import { getGateConfig, getVerifiableTelemetrySummary, resolveGatewayOrigin } from "@/lib/x402-gate";
 
 /**
  * Layer 4: Open-Web Protocol Discovery — A2A Agent Card
@@ -15,10 +15,8 @@ import { getGateConfig, getVerifiableTelemetrySummary } from "@/lib/x402-gate";
  *   verify cryptographic settlement history.
  */
 export async function GET(req: NextRequest) {
-  const cfg = getGateConfig();
-  const origin =
-    process.env.NEXT_PUBLIC_GATEWAY_URL ||
-    `${req.nextUrl.protocol}//${req.nextUrl.host}`;
+  const origin = resolveGatewayOrigin(req);
+  const cfg = getGateConfig(origin);
   const telemetry = getVerifiableTelemetrySummary();
 
   return NextResponse.json({

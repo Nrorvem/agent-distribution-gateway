@@ -1,18 +1,16 @@
-import { NextResponse } from "next/server";
-import { getGateConfig, buildX402Challenge } from "@/lib/x402-gate";
+import { NextRequest, NextResponse } from "next/server";
+import { getGateConfig, buildX402Challenge, resolveGatewayOrigin } from "@/lib/x402-gate";
 import { PERSON_ENRICH_JSON_SCHEMA } from "@/verticals/option-a-apollo/schema";
-
-const PUBLIC_ORIGIN =
-  process.env.PUBLIC_GATEWAY_ORIGIN || "https://agent-distribution-gateway.vercel.app";
 
 /**
  * GET /.well-known/x402
  * Machine-readable x402 resource discovery manifest for x402scan, Bazaar crawlers,
  * and autonomous agent payment routers.
  */
-export async function GET() {
-  const cfg = getGateConfig();
-  const enrichUrl = `${PUBLIC_ORIGIN}/api/v1/enrich/person`;
+export async function GET(req: NextRequest) {
+  const origin = resolveGatewayOrigin(req);
+  const cfg = getGateConfig(origin);
+  const enrichUrl = `${origin}/api/v1/enrich/person`;
   const description =
     `Apollo.io B2B Person Enrichment & Verified Work Email Finder ($${cfg.priceUsd} USDC on Base — Free-on-Miss: $0.00 charged if no deliverable email is found)`;
 
@@ -25,12 +23,12 @@ export async function GET() {
       seller: {
         name: "Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402)",
         description,
-        url: PUBLIC_ORIGIN,
+        url: origin,
       },
       ownershipProofs: cfg.ownershipProofs,
       resources: [
-        `${PUBLIC_ORIGIN}/api/v1/enrich/person`,
-        `${PUBLIC_ORIGIN}/api/mcp`,
+        `${origin}/api/v1/enrich/person`,
+        `${origin}/api/mcp`,
       ],
       endpoints: [
         {

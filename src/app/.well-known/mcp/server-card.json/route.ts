@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PERSON_ENRICH_JSON_SCHEMA } from "@/verticals/option-a-apollo/schema";
-import { getGateConfig } from "@/lib/x402-gate";
+import { getGateConfig, resolveGatewayOrigin } from "@/lib/x402-gate";
 
 /**
  * Layer 4: MCP Static Server Card Discovery
@@ -10,10 +10,8 @@ import { getGateConfig } from "@/lib/x402-gate";
  * extract serverInfo and tool schemas over HTTPS without needing a public GitHub repo.
  */
 export async function GET(req: NextRequest) {
-  const cfg = getGateConfig();
-  const origin =
-    process.env.NEXT_PUBLIC_GATEWAY_URL ||
-    `${req.nextUrl.protocol}//${req.nextUrl.host}`;
+  const origin = resolveGatewayOrigin(req);
+  const cfg = getGateConfig(origin);
 
   return NextResponse.json({
     serverInfo: {

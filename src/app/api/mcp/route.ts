@@ -10,6 +10,7 @@ import {
   settleVerifiedX402Payment,
   recordAuditLog,
   getGateConfig,
+  resolveGatewayOrigin,
 } from "@/lib/x402-gate";
 
 /**
@@ -50,8 +51,9 @@ const MCP_TOOLS = [
   },
 ];
 
-export async function GET() {
-  const cfg = getGateConfig();
+export async function GET(req: NextRequest) {
+  const origin = resolveGatewayOrigin(req);
+  const cfg = getGateConfig(origin);
   return NextResponse.json({
     protocol: "mcp-streamable-http",
     serverInfo: {
@@ -154,7 +156,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (toolName === "enrich_person") {
-      const resourceUrl = req.nextUrl.toString();
+      const origin = resolveGatewayOrigin(req);
+      const resourceUrl = `${origin}/api/mcp`;
       const description =
         "MCP Tool Call: enrich_person (Apollo.io B2B Person Enrichment — $0.03 USDC on Match, Free on Miss)";
       const paymentProof =

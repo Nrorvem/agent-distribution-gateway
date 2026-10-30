@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getGateConfig } from "@/lib/x402-gate";
+import { getGateConfig, resolveGatewayOrigin } from "@/lib/x402-gate";
 
 /**
  * Layer 4: Open-Web Protocol Discovery — /llms.txt
  * Provides a clean, structured Markdown manifest for LLM agents browsing the root domain.
  */
 export async function GET(req: NextRequest) {
-  const cfg = getGateConfig();
-  const origin =
-    process.env.NEXT_PUBLIC_GATEWAY_URL ||
-    `${req.nextUrl.protocol}//${req.nextUrl.host}`;
+  const origin = resolveGatewayOrigin(req);
+  const cfg = getGateConfig(origin);
 
   const content = `# Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402 v2 + MCP)
 

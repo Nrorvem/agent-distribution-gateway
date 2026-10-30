@@ -1,17 +1,15 @@
-import { NextResponse } from "next/server";
-import { getGateConfig } from "@/lib/x402-gate";
+import { NextRequest, NextResponse } from "next/server";
+import { getGateConfig, resolveGatewayOrigin } from "@/lib/x402-gate";
 import { PERSON_ENRICH_JSON_SCHEMA } from "@/verticals/option-a-apollo/schema";
-
-const PUBLIC_ORIGIN =
-  process.env.PUBLIC_GATEWAY_ORIGIN || "https://agent-distribution-gateway.vercel.app";
 
 /**
  * GET /openapi.json
  * Canonical OpenAPI 3.1.0 discovery contract for x402scan, AgentCash, and autonomous agents.
  * Implements the exact x402scan discovery specification (https://www.x402scan.com/discovery/spec).
  */
-export async function GET() {
-  const cfg = getGateConfig();
+export async function GET(req: NextRequest) {
+  const origin = resolveGatewayOrigin(req);
+  const cfg = getGateConfig(origin);
   const fixedUsdAmount = Number(cfg.priceUsd).toFixed(6);
 
   const openApiSpec = {
@@ -36,7 +34,7 @@ export async function GET() {
     },
     servers: [
       {
-        url: PUBLIC_ORIGIN,
+        url: origin,
         description: "Production Agent Distribution Gateway",
       },
     ],

@@ -35,7 +35,10 @@ function loadEnvLocal() {
 async function main() {
   loadEnvLocal();
 
-  const endpointUrl = "https://agent-distribution-gateway.vercel.app/api/v1/enrich/person";
+  const endpointUrl =
+    process.argv[2] ||
+    process.env.GATEWAY_ENDPOINT ||
+    "https://enrichmatch.dev/api/v1/enrich/person";
   const serviceName = "Apollo.io B2B Person Enrichment & Verified Work Email Finder";
   const priceUsdc = 0.1;
 

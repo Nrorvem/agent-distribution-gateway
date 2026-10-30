@@ -16,20 +16,57 @@ import { exec } from "node:child_process";
 import { recoverPersonalSignAddress } from "../src/lib/eip3009-signer.ts";
 
 const PORT = 3333;
-const PUBLIC_ORIGIN =
-  process.env.PUBLIC_GATEWAY_ORIGIN || "https://agent-distribution-gateway.vercel.app";
+const TARGET_ORIGIN =
+  process.argv[2] ||
+  process.env.TARGET_ORIGIN ||
+  process.env.PUBLIC_GATEWAY_ORIGIN ||
+  "https://enrichmatch.dev";
 const EXPECTED_MERCHANT = "0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC";
 
-function saveProofToEnvLocal(proof: string) {
+function saveProofToEnvLocal(proof: string, origin: string) {
   const envPath = path.resolve(process.cwd(), ".env.local");
   let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf-8") : "";
+
+  // Parse existing X402_OWNERSHIP_PROOFS map or initialize with legacy proof
+  let proofsMap: Record<string, string> = {
+    "agent-distribution-gateway.vercel.app":
+      "0x492c2e9d58f6d51d1e4871ad0592b8213e714456ef810d930f14bf4806209ab350606aca8a865ea952ed288286a173d7ff9ba106a052ce579f72c38f537cfc311c",
+  };
+
+  const match = content.match(/X402_OWNERSHIP_PROOFS=(.+)/);
+  if (match) {
+    try {
+      proofsMap = { ...proofsMap, ...JSON.parse(match[1].trim()) };
+    } catch {
+      // ignore
+    }
+  }
+
+  const hostKey = origin.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
+  proofsMap[hostKey] = proof;
+  const mapJson = JSON.stringify(proofsMap);
+
+  if (content.includes("X402_OWNERSHIP_PROOFS=")) {
+    content = content.replace(/X402_OWNERSHIP_PROOFS=.*/g, `X402_OWNERSHIP_PROOFS=${mapJson}`);
+  } else {
+    content += `\nX402_OWNERSHIP_PROOFS=${mapJson}\n`;
+  }
+
+  if (content.includes("PUBLIC_GATEWAY_ORIGIN=")) {
+    content = content.replace(/PUBLIC_GATEWAY_ORIGIN=.*/g, `PUBLIC_GATEWAY_ORIGIN=${origin}`);
+  } else {
+    content += `\nPUBLIC_GATEWAY_ORIGIN=${origin}\n`;
+  }
+
+  // Also set X402_OWNERSHIP_PROOF for backward compatibility
   if (content.includes("X402_OWNERSHIP_PROOF=")) {
     content = content.replace(/X402_OWNERSHIP_PROOF=.*/g, `X402_OWNERSHIP_PROOF=${proof}`);
   } else {
     content += `\nX402_OWNERSHIP_PROOF=${proof}\n`;
   }
+
   fs.writeFileSync(envPath, content, "utf-8");
-  console.log(`\n✅ Saved X402_OWNERSHIP_PROOF to .env.local!`);
+  console.log(`\n✅ Saved X402_OWNERSHIP_PROOFS, X402_OWNERSHIP_PROOF, and PUBLIC_GATEWAY_ORIGIN to .env.local!`);
 }
 
 const HTML_CONTENT = `<!DOCTYPE html>
@@ -197,7 +234,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     <div class="info-box">
       <div class="info-row">
         <span class="info-label">Domain Origin:</span>
-        <span class="info-value">https://agent-distribution-gateway.vercel.app</span>
+        <span class="info-value">${TARGET_ORIGIN}</span>
       </div>
       <div class="info-row">
         <span class="info-label">Expected Wallet:</span>
@@ -230,7 +267,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
   </div>
 
   <script>
-    const ORIGIN = "https://agent-distribution-gateway.vercel.app";
+    const ORIGIN = "${TARGET_ORIGIN}";
     const EXPECTED_WALLET = "0x7c38096030c9cf41ec551dacdfc1abaa60590abc";
 
     let provider = null;
@@ -293,7 +330,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
         btn.innerText = "Please confirm the message on your Ledger device...";
         statusArea.innerHTML = \`
           <div class="status-msg info">
-            Check your physical Ledger screen: verify the message is "https://agent-distribution-gateway.vercel.app" and approve.
+            Check your physical Ledger screen: verify the message is "\${ORIGIN}" and approve.
           </div>
         \`;
 
@@ -360,7 +397,7 @@ function startServer() {
             return;
           }
 
-          const recovered = recoverPersonalSignAddress(PUBLIC_ORIGIN, signature);
+          const recovered = recoverPersonalSignAddress(TARGET_ORIGIN, signature);
           console.log(`\n• Received Signature : ${signature}`);
           console.log(`• Recovered Signer   : ${recovered}`);
           console.log(`• Expected Signer    : ${EXPECTED_MERCHANT}`);
@@ -376,7 +413,7 @@ function startServer() {
             return;
           }
 
-          saveProofToEnvLocal(signature);
+          saveProofToEnvLocal(signature, TARGET_ORIGIN);
 
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true, recovered }));
@@ -407,7 +444,7 @@ function startServer() {
     console.log(`=================================================================`);
     console.log(`• Local Server running at : ${url}`);
     console.log(`• Expected Ledger Address : ${EXPECTED_MERCHANT}`);
-    console.log(`• Origin string to sign   : ${PUBLIC_ORIGIN}`);
+    console.log(`• Origin string to sign   : ${TARGET_ORIGIN}`);
     console.log(`\nOpening your browser to ${url} ...`);
 
     exec(`open ${url}`, (err) => {

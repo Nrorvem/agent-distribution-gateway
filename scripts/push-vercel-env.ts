@@ -43,6 +43,12 @@ function main() {
     ["X402_ENRICH_PRICE_USD", env.X402_ENRICH_PRICE_USD || "0.03"],
   ];
 
+  if (env.PUBLIC_GATEWAY_ORIGIN) {
+    varsToPush.push(["PUBLIC_GATEWAY_ORIGIN", env.PUBLIC_GATEWAY_ORIGIN]);
+  }
+  if (env.X402_OWNERSHIP_PROOFS) {
+    varsToPush.push(["X402_OWNERSHIP_PROOFS", env.X402_OWNERSHIP_PROOFS]);
+  }
   if (env.X402_OWNERSHIP_PROOF) {
     varsToPush.push(["X402_OWNERSHIP_PROOF", env.X402_OWNERSHIP_PROOF]);
   }

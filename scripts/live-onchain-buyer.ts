@@ -9,9 +9,10 @@
  * Step 2:
  *   - Path B (Standard Agent Flow — EIP-3009 Gasless Off-Chain Signature):
  *     If `BUYER_PRIVATE_KEY` is set (in env or `.env.local`), signs a single-use
- *     EIP-3009 `TransferWithAuthorization` voucher for $0.10 USDC on Base Mainnet
- *     (requires $0.00 ETH gas!) and submits it in `X-PAYMENT`. Your gateway verifies
- *     and settles the payment on-chain via `https://facilitator.payai.network` directly
+ *     EIP-3009 `TransferWithAuthorization` voucher for the live challenge amount
+ *     (currently $0.03 USDC) on Base Mainnet (requires $0.00 ETH gas!) and submits it
+ *     in `X-PAYMENT`. Your gateway verifies the payment, and settles it on-chain only on
+ *     a match (Free-on-Miss) via the Coinbase CDP facilitator (payAI fallback) directly
  *     into your Ledger wallet (`0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC`).
  *   - Path A (Legacy Direct txHash):
  *     If `TX_HASH=0x...` is provided, sends the raw txHash in `X-PAYMENT`.
@@ -77,7 +78,7 @@ async function main() {
   }
 
   const reqTerms = challengeData.accepts?.[0];
-  const atomicAmount = String(reqTerms?.amount || reqTerms?.maxAmountRequired || "100000");
+  const atomicAmount = String(reqTerms?.amount || reqTerms?.maxAmountRequired || "30000");
   const usdDisplay = (Number(atomicAmount) / 1_000_000).toFixed(2);
   console.log(`   • x402 Version    : v${challengeData.x402Version}`);
   console.log(`   • x402 Network    : ${reqTerms?.network}`);

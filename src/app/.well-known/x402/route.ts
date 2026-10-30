@@ -18,6 +18,8 @@ export async function GET() {
 
   return NextResponse.json(
     {
+      // Manifest format version (x402scan / AgentCash `/.well-known/x402` spec, e.g. stableenrich.dev).
+      // NOT the protocol version — keep at 1. Protocol version is `x402Version` below.
       version: 1,
       x402Version: 2,
       seller: {

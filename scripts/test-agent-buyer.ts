@@ -5,7 +5,7 @@
  *   Stage 1: Intent Formulation & Mandate Scoping ($0.25 max budget for B2B lead enrichment)
  *   Stage 2: Discovery & Negotiation (Inspecting Agent Card & schema)
  *   Stage 3: Identity & KYA / Zero-Auth Challenge (Triggering HTTP 402 Payment Required)
- *   Stage 4: Policy Enforcement & Guardrail Hook (Verifying $0.10 <= $0.25 budget mandate)
+ *   Stage 4: Policy Enforcement & Guardrail Hook (Verifying $0.03 <= $0.25 budget mandate)
  *   Stage 5: Payment Execution & Settlement (Signing x402 payload & retrying request)
  *   Stage 6: Fulfillment Verification & Audit Logging (Validating deterministic output & receipt)
  *

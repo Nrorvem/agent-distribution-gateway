@@ -17,7 +17,7 @@ import { signPersonalMessage } from "./eip3009-signer.ts";
 export interface X402PaymentRequirement {
   scheme: "exact";
   network: "eip155:8453" | "eip155:84532" | "base" | "base-sepolia";
-  amount: string; // USDC atomic units (6 decimals: $0.10 = "100000")
+  amount: string; // USDC atomic units (6 decimals: $0.03 = "30000")
   maxAmountRequired?: string; // Included for v1 backwards-compatibility if needed
   asset: string; // USDC contract address on Base
   payTo: string;
@@ -557,7 +557,7 @@ const ERC20_TRANSFER_TOPIC0 =
  *    so old transactions cannot be replayed after a serverless cold start
  * 4. Emitted ERC-20 Transfer log from the official Base USDC contract
  * 5. Recipient (`to`) matches `cfg.payTo` (0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC)
- * 6. Amount transferred (`value`) >= `cfg.atomicUnits` (100000 = $0.10 USDC)
+ * 6. Amount transferred (`value`) >= `cfg.atomicUnits` (default 30000 = $0.03 USDC)
  */
 async function verifyDirectOnChainTxHash(
   txHash: string,

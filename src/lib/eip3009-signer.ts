@@ -389,7 +389,7 @@ export function buildSignedX402PaymentHeader(params: {
     resource: {
       url:
         params.resourceUrl ||
-        "https://agent-distribution-gateway.vercel.app/api/v1/enrich/person",
+        "https://enrichmatch.dev/api/v1/enrich/person",
       description:
         params.description ||
         "Apollo.io Verified B2B Person Enrichment (1 profile lookup)",

@@ -413,6 +413,15 @@ export function getGateConfig(targetOrigin?: string) {
     }
   }
 
+  // De-duplicate (case-insensitive) while preserving priority order
+  const seenProofs = new Set<string>();
+  ownershipProofs = ownershipProofs.filter((p) => {
+    const key = p.toLowerCase();
+    if (seenProofs.has(key)) return false;
+    seenProofs.add(key);
+    return true;
+  });
+
   return {
     network,
     networkCaip2,

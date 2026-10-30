@@ -17,6 +17,12 @@ export async function GET() {
   const openApiSpec = {
     openapi: "3.1.0",
     "x-agentcash-owner": cfg.payTo,
+    "x-discovery": {
+      ownershipProofs: cfg.ownershipProofs,
+    },
+    "x-agentcash-provenance": {
+      ownershipProofs: cfg.ownershipProofs,
+    },
     info: {
       title: "Apollo.io B2B Person Enrichment & Verified Work Email Finder",
       version: "1.1.0",

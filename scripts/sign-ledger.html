@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>x402scan Ledger Ownership Proof Signer</title>
+  <style>
+    :root {
+      --bg: #090a0f;
+      --card: #13151f;
+      --border: #232738;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --success: #10b981;
+      --danger: #ef4444;
+    }
+    body {
+      margin: 0;
+      padding: 40px 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+    .container {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      max-width: 680px;
+      width: 100%;
+      padding: 32px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+    }
+    h1 {
+      font-size: 24px;
+      margin-top: 0;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .badge {
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      font-weight: 500;
+    }
+    p {
+      color: var(--muted);
+      line-height: 1.5;
+      margin-bottom: 24px;
+    }
+    .info-box {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 24px;
+      font-size: 14px;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+    .info-row:last-child {
+      margin-bottom: 0;
+    }
+    .info-label {
+      color: var(--muted);
+      min-width: 130px;
+      font-weight: 500;
+    }
+    .info-value {
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    button {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 14px 24px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      transition: background 0.15s ease;
+    }
+    button:hover {
+      background: var(--accent-hover);
+    }
+    button:disabled {
+      background: #374151;
+      cursor: not-allowed;
+    }
+    .result {
+      margin-top: 24px;
+      display: none;
+    }
+    .result.visible {
+      display: block;
+    }
+    .sig-box {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      word-break: break-all;
+      color: #7ee787;
+      margin: 12px 0;
+      user-select: all;
+    }
+    .status-msg {
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 14px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status-msg.success {
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: var(--success);
+    }
+    .status-msg.error {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: var(--danger);
+    }
+    .btn-secondary {
+      background: #1f2937;
+      margin-top: 8px;
+    }
+    .btn-secondary:hover {
+      background: #374151;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>
+      x402scan Ownership Proof
+      <span class="badge">EIP-191</span>
+    </h1>
+    <p>
+      Generates the cryptographic signature required by <strong>x402scan</strong> to verify domain ownership of your gateway and display the verified badge on your merchant wallet.
+    </p>
+
+    <div class="info-box">
+      <div class="info-row">
+        <span class="info-label">Domain Origin:</span>
+        <span class="info-value" id="originVal">https://agent-distribution-gateway.vercel.app</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Expected Wallet:</span>
+        <span class="info-value">0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Device Type:</span>
+        <span class="info-value">Ledger Nano S Plus</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Cost:</span>
+        <span class="info-value" style="color: var(--success);">$0.00 (Free off-chain signature, zero gas)</span>
+      </div>
+    </div>
+
+    <button id="signBtn" onclick="handleSign()">
+      Connect Ledger &amp; Sign Message
+    </button>
+
+    <div id="statusArea"></div>
+
+    <div id="resultArea" class="result">
+      <div class="status-msg success">
+        ✓ Cryptographic signature successfully created!
+      </div>
+      <div style="font-size: 13px; color: var(--muted); margin-bottom: 4px;">
+        Generated EIP-191 Proof:
+      </div>
+      <div class="sig-box" id="sigVal"></div>
+      <button class="btn-secondary" onclick="copySig()">
+        Copy Signature to Clipboard
+      </button>
+
+      <div style="margin-top: 20px; font-size: 13px; color: var(--muted); line-height: 1.6;">
+        <strong>Next Step:</strong> Paste this signature into your terminal:
+        <pre style="background: #000; padding: 10px; border-radius: 6px; overflow-x: auto; color: #60a5fa;">node --experimental-strip-types scripts/verify-ownership-proof.ts <span id="sigPlaceholder">&lt;signature&gt;</span></pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const ORIGIN = "https://agent-distribution-gateway.vercel.app";
+    const EXPECTED_WALLET = "0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC".toLowerCase();
+
+    async function handleSign() {
+      const btn = document.getElementById("signBtn");
+      const statusArea = document.getElementById("statusArea");
+      const resultArea = document.getElementById("resultArea");
+      statusArea.innerHTML = "";
+      resultArea.classList.remove("visible");
+
+      if (!window.ethereum) {
+        statusArea.innerHTML = `
+          <div class="status-msg error" style="margin-top: 16px;">
+            No web3 wallet detected. Please open this page in Chrome/Brave with MetaMask or Rabby installed.
+          </div>
+        `;
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerText = "Waiting for Ledger approval...";
+
+      try {
+        const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+        if (!accounts || accounts.length === 0) {
+          throw new Error("No account selected in wallet.");
+        }
+        const activeAccount = accounts[0];
+        console.log("Active account:", activeAccount);
+
+        if (activeAccount.toLowerCase() !== EXPECTED_WALLET) {
+          statusArea.innerHTML = `
+            <div class="status-msg error" style="margin-top: 16px;">
+              Active account (${activeAccount}) does not match expected Ledger address (0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC). Please select your Ledger account in your wallet.
+            </div>
+          `;
+          btn.disabled = false;
+          btn.innerText = "Connect Ledger & Sign Message";
+          return;
+        }
+
+        // Request EIP-191 personal_sign
+        const signature = await window.ethereum.request({
+          method: "personal_sign",
+          params: [ORIGIN, activeAccount],
+        });
+
+        document.getElementById("sigVal").innerText = signature;
+        document.getElementById("sigPlaceholder").innerText = signature;
+        resultArea.classList.add("visible");
+        btn.innerText = "Signed Successfully!";
+      } catch (err) {
+        console.error(err);
+        statusArea.innerHTML = `
+          <div class="status-msg error" style="margin-top: 16px;">
+            Signing failed: ${err.message || String(err)}
+          </div>
+        `;
+        btn.disabled = false;
+        btn.innerText = "Connect Ledger & Sign Message";
+      }
+    }
+
+    function copySig() {
+      const sig = document.getElementById("sigVal").innerText;
+      navigator.clipboard.writeText(sig);
+      alert("Signature copied to clipboard!");
+    }
+  </script>
+</body>
+</html>

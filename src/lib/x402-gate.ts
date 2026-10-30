@@ -12,6 +12,7 @@
  */
 
 import { PERSON_ENRICH_JSON_SCHEMA } from "../verticals/option-a-apollo/schema.ts";
+import { signPersonalMessage } from "./eip3009-signer.ts";
 
 export interface X402PaymentRequirement {
   scheme: "exact";
@@ -274,6 +275,40 @@ export function getGateConfig() {
   const networkCaip2: "eip155:8453" | "eip155:84532" =
     network === "base" ? "eip155:8453" : "eip155:84532";
 
+  const publicOrigin =
+    process.env.PUBLIC_GATEWAY_ORIGIN || "https://agent-distribution-gateway.vercel.app";
+  const ownershipProofEnv = (
+    process.env.X402_OWNERSHIP_PROOF ||
+    process.env.X402_OWNERSHIP_PROOFS ||
+    ""
+  ).trim();
+  let ownershipProofs: string[] = [];
+  if (ownershipProofEnv) {
+    try {
+      if (ownershipProofEnv.startsWith("[")) {
+        const parsed = JSON.parse(ownershipProofEnv);
+        ownershipProofs = Array.isArray(parsed) ? parsed.map(String) : [String(parsed)];
+      } else {
+        ownershipProofs = ownershipProofEnv.split(",").map((s) => s.trim()).filter(Boolean);
+      }
+    } catch {
+      ownershipProofs = [ownershipProofEnv];
+    }
+  }
+
+  // Also include buyer private key signature if present for comprehensive wallet coverage
+  const buyerPriv = (process.env.BUYER_PRIVATE_KEY || "").trim();
+  if (buyerPriv) {
+    try {
+      const buyerProof = signPersonalMessage(publicOrigin, buyerPriv);
+      if (!ownershipProofs.includes(buyerProof)) {
+        ownershipProofs.push(buyerProof);
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
   return {
     network,
     networkCaip2,
@@ -289,6 +324,7 @@ export function getGateConfig() {
     devBypassToken,
     maxTxAgeSeconds,
     allowDirectTxHash,
+    ownershipProofs,
   };
 }
 

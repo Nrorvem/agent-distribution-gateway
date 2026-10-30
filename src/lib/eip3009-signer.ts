@@ -206,6 +206,17 @@ export function signDigestSecp256k1(digest32: Buffer, privateKeyHex: string): st
   return `0x${rHex}${sHex}${vHex}`;
 }
 
+function modPow(base: bigint, exp: bigint, m: bigint): bigint {
+  let res = 1n;
+  base = mod(base, m);
+  while (exp > 0n) {
+    if (exp & 1n) res = mod(res * base, m);
+    base = mod(base * base, m);
+    exp >>= 1n;
+  }
+  return res;
+}
+
 /**
  * EIP-191 personal_sign (`\x19Ethereum Signed Message:\n<length><message>`)
  */
@@ -214,6 +225,51 @@ export function signPersonalMessage(message: string, privateKeyHex: string): str
   const prefixBytes = Buffer.from(`\x19Ethereum Signed Message:\n${msgBytes.length}`, "utf-8");
   const digest = keccak256(Buffer.concat([prefixBytes, msgBytes]));
   return signDigestSecp256k1(digest, privateKeyHex);
+}
+
+/**
+ * Recovers the checksummed Ethereum address from an EIP-191 personal_sign signature
+ * and original plain text message.
+ */
+export function recoverPersonalSignAddress(message: string, signatureHex: string): string {
+  const cleanSig = signatureHex.replace(/^0x/, "");
+  if (cleanSig.length !== 130) {
+    throw new Error(`Invalid signature length: ${cleanSig.length} hex chars (expected 130)`);
+  }
+  const r = BigInt("0x" + cleanSig.slice(0, 64));
+  const s = BigInt("0x" + cleanSig.slice(64, 128));
+  let v = parseInt(cleanSig.slice(128, 130), 16);
+  if (v >= 27) v -= 27;
+
+  const msgBytes = Buffer.from(message, "utf-8");
+  const prefixBytes = Buffer.from(`\x19Ethereum Signed Message:\n${msgBytes.length}`, "utf-8");
+  const digest = keccak256(Buffer.concat([prefixBytes, msgBytes]));
+  const z = BigInt("0x" + digest.toString("hex")) % SECP_N;
+
+  const x = r;
+  const y2 = mod(mod(x * x * x) + 7n);
+  let y = modPow(y2, (SECP_P + 1n) / 4n, SECP_P);
+  if ((y & 1n) !== BigInt(v & 1)) {
+    y = SECP_P - y;
+  }
+
+  const R: Point = { x, y };
+  const rInv = modInv(r, SECP_N);
+  const sR = pointMul(s, R);
+  const zG = pointMul(z, { x: SECP_GX, y: SECP_GY });
+  const negZg: Point = { x: zG.x, y: SECP_P - zG.y };
+  const sRminusZg = pointAdd(sR, negZg);
+  if (!sRminusZg) throw new Error("Invalid point recovery");
+  const Q = pointMul(rInv, sRminusZg);
+
+  const pubBytes = Buffer.concat([bigintTo32Bytes(Q.x), bigintTo32Bytes(Q.y)]);
+  const addrLower = keccak256(pubBytes).subarray(12).toString("hex");
+  const hashHex = keccak256(Buffer.from(addrLower, "utf-8")).toString("hex");
+  let checksummed = "0x";
+  for (let i = 0; i < 40; i++) {
+    checksummed += parseInt(hashHex[i], 16) >= 8 ? addrLower[i].toUpperCase() : addrLower[i];
+  }
+  return checksummed;
 }
 
 // ============================================================================

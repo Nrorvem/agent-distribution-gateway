@@ -1,54 +1,60 @@
-# Step 3: Public Deployment & Agent Directory Registration Guide
+# Public Deployment & Agent Directory Registration Guide
 
-Your gateway exposes four live machine-native endpoints once deployed to Vercel:
+Your gateway exposes six live machine-native endpoints on Vercel (`https://agent-distribution-gateway.vercel.app`):
 
 | Endpoint | Path | Purpose |
 | :--- | :--- | :--- |
-| **MCP Server (Streamable HTTP)** | `https://<YOUR_DOMAIN>/api/mcp` | Primary endpoint for Claude Code, Cursor, Smithery, Glama, and `x402-mcp` agents |
-| **REST `x402` Endpoint** | `https://<YOUR_DOMAIN>/api/v1/enrich/person` | Direct `HTTP 402` endpoint for `x402` Bazaar and HTTP buyer agents |
-| **A2A Agent Card** | `https://<YOUR_DOMAIN>/.well-known/agent.json` | Open-web discovery card advertising schemas, pricing, and verifiable `txHashes` |
-| **LLM Manifest** | `https://<YOUR_DOMAIN>/llms.txt` | Markdown documentation for web-crawling agents |
+| **Paid REST `x402 v2` Endpoint** | `POST /api/v1/enrich/person` | Direct `HTTP 402` (`x402Version: 2`) endpoint for `x402scan`, Coinbase Bazaar, and autonomous HTTP buyer agents |
+| **MCP Server (Streamable HTTP)** | `GET/POST /api/mcp` | Primary endpoint for Claude Code, Cursor, Smithery, Glama, and `x402-mcp` agents |
+| **OpenAPI 3.1.0 Discovery Spec** | `GET /openapi.json` | Canonical `x402scan` / Poncho / AgentCash discovery document (`info.contact.email`, `info.x-guidance`, `x-payment-info`) |
+| **x402 Resource Manifest** | `GET /.well-known/x402` | Machine-readable x402 v2 resource discovery index |
+| **A2A Agent Card** | `GET /.well-known/agent.json` | Open-web A2A discovery card advertising schemas, pricing, and verifiable BaseScan `txHashes` |
+| **LLM Manifest** | `GET /llms.txt` | Markdown documentation for web-crawling agents |
 
 ---
 
-## 1. Environment Variables Required in Vercel
+## 1. Environment Variables in Vercel Production
 
-When deploying to Vercel (via CLI or Dashboard), set these 5 environment variables:
+Push environment variables directly from `.env.local` to Vercel Production via CLI:
 
+```bash
+npx --yes vercel link
+/opt/homebrew/bin/node --experimental-strip-types scripts/push-vercel-env.ts
+```
+
+Required production variables:
 ```env
 APOLLO_API_KEY=<your_scoped_apollo_api_key>
 APOLLO_MOCK_MODE=false
 X402_WALLET_ADDRESS=0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC
 X402_NETWORK=base
 X402_ENRICH_PRICE_USD=0.10
-X402_FACILITATOR_URL=https://x402.org/facilitator
+X402_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402
+CDP_API_KEY_ID=<your_cdp_api_key_id>
+CDP_API_KEY_SECRET=<your_cdp_api_key_secret>
 ```
-
-*(Note: In production on Vercel, either omit `X402_DEV_BYPASS_TOKEN` or set it to a long random secret that only you know so external agents must pay real USDC on Base.)*
 
 ---
 
-## 2. Where to Register Your Live Endpoint (Layer 4 Distribution)
+## 2. Discovery & Distribution Channels (Layer 4)
 
-Once your `https://<YOUR_DOMAIN>.vercel.app` URL is live:
+### A. `x402scan` / Poncho (`https://www.x402scan.com/resources/register`)
+- Submit origin: `https://agent-distribution-gateway.vercel.app` (or endpoint `https://agent-distribution-gateway.vercel.app/api/v1/enrich/person`).
+- `x402scan` automatically fetches `/openapi.json`, verifies `x402Version: 2` (`eip155:8453`, `PAYMENT-REQUIRED` header), loads `/favicon.ico`, and verifies origin ownership via `info.contact.email` (`info@nrorvem.com`).
 
-### A. Coinbase `x402` Bazaar (Automatic + Manual Discovery)
-- **How `x402` Bazaar indexes your endpoint:**
-  Coinbase’s `x402` Facilitator automatically indexes resources (`resource: "https://<YOUR_DOMAIN>/api/v1/enrich/person"` and `/api/mcp`) when real `x402` payments settle through the Facilitator (`withBazaar` / discovery catalog) or when submitted to the `x402` ecosystem directory.
-- **Cold-Start Seeding Tip:**
-  Run 5–10 real `\$0.10` USDC calls against `https://<YOUR_DOMAIN>/api/v1/enrich/person` using a buyer wallet (`@coinbase/payments-mcp` or `x402-fetch`). Because the `\$0.10` USDC transfers directly to your own Ledger wallet (`0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC`), your net cost is `\$0.00` while your endpoint registers real on-chain volume and `txHashes`.
+### B. Official Coinbase `x402` Bazaar (`https://api.cdp.coinbase.com/platform/v2/x402`)
+- When `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` are active on Vercel, running a single real `$0.10 USDC` call via:
+  ```bash
+  /opt/homebrew/bin/node --experimental-strip-types scripts/live-onchain-buyer.ts
+  ```
+  settles through Coinbase's Official Facilitator with `extensions.bazaar` attached, automatically indexing the endpoint into Coinbase's x402 Bazaar catalog while settling the `$0.10 USDC` back into your Ledger wallet (`0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC`).
 
-### B. Smithery (`https://smithery.ai/new`)
-- Connect your GitHub repository or submit your remote Streamable HTTP URL:
-  `https://<YOUR_DOMAIN>/api/mcp`
-- Smithery automatically reads `smithery.yaml` and calls `POST /api/mcp` (`tools/list`) to index `get_enrichment_quote` and `enrich_person`.
+### C. Smithery (`https://smithery.ai`) & Glama (`https://glama.ai/mcp/servers`)
+- Connected to GitHub (`https://github.com/Nrorvem/agent-distribution-gateway`) and live MCP URL (`https://agent-distribution-gateway.vercel.app/api/mcp`).
+- Reads `smithery.yaml`, `glama.json`, and `server.json` at the repo root and dynamically queries `POST /api/mcp` (`tools/list`).
 
-### C. Glama MCP Directory (`https://glama.ai/mcp/servers`)
-- Submit your repository / URL; Glama reads `glama.json` at the repo root and indexes your tool definitions and semantic tags.
-
-### D. PulseMCP (`https://www.pulsemcp.com/submit`) & `mcpservers.org`
-- Submit:
-  - **Name:** `Apollo.io B2B Person Enrichment & Work Email Finder (x402)`
-  - **Server URL:** `https://<YOUR_DOMAIN>/api/mcp`
-  - **Agent Card:** `https://<YOUR_DOMAIN>/.well-known/agent.json`
-  - **Description:** Zero-signup B2B Person Enrichment, Executive Work Email Finder, and LinkedIn-to-Email Resolver powered by Apollo.io (`$0.10` USDC per call via `x402` on Base).
+### D. Community `x402bazaar.org`
+- Terminal registration script (uses lowercase `ownerAddress` to bypass `Wintyx57/x402-backend`'s mixed-case EIP-191 bug):
+  ```bash
+  /opt/homebrew/bin/node --experimental-strip-types scripts/register-x402bazaar.ts
+  ```

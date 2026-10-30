@@ -18,12 +18,14 @@ export async function GET() {
 
   return NextResponse.json(
     {
+      version: 1,
       x402Version: 2,
       seller: {
         name: "Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402)",
         description,
         url: PUBLIC_ORIGIN,
       },
+      ownershipProofs: cfg.ownershipProofs,
       resources: [
         `${PUBLIC_ORIGIN}/api/v1/enrich/person`,
         `${PUBLIC_ORIGIN}/api/mcp`,

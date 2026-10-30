@@ -91,12 +91,46 @@ async function main() {
     )}\n`
   );
 
+  // Preflight check against Coinbase CDP x402 Validator so we never spend USDC if Bazaar schema validation would reject
+  try {
+    const valRes = await fetch("https://api.cdp.coinbase.com/platform/v2/x402/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resource: PRODUCTION_ENDPOINT,
+        method: "POST",
+      }),
+    });
+    if (valRes.ok) {
+      const valJson = (await valRes.json()) as {
+        valid?: boolean;
+        simulation?: { outcome?: string; rejectionReason?: string };
+        preflight?: Array<{ check: string; passed: boolean; detail: string }>;
+      };
+      const failedChecks = (valJson.preflight || []).filter((c) => !c.passed);
+      console.log(
+        `   • CDP Bazaar Preflight : valid=${valJson.valid}, simulation=${valJson.simulation?.outcome} (${
+          (valJson.preflight || []).length - failedChecks.length
+        }/${(valJson.preflight || []).length} checks passed)`
+      );
+      if (!valJson.valid || valJson.simulation?.outcome === "rejected") {
+        console.error(
+          `   ❌ Aborting before spending USDC: CDP Bazaar validator rejected discovery config:`,
+          failedChecks
+        );
+        return;
+      }
+    }
+  } catch {
+    // Ignore validator network errors
+  }
+
   const buyerPrivKey = process.env.BUYER_PRIVATE_KEY || localEnv.BUYER_PRIVATE_KEY || "";
   const txHash = process.env.TX_HASH || "";
 
   if (buyerPrivKey) {
     const buyerAddress = privateKeyToAddress(buyerPrivKey);
-    console.log("2️⃣  Path B (Standard x402 v2 Agent Flow — EIP-3009 Gasless Signature):");
+    console.log("\n2️⃣  Path B (Standard x402 v2 Agent Flow — EIP-3009 Gasless Signature):");
     console.log(`   • Buyer Agent Wallet : ${buyerAddress}`);
     console.log(`   • Paying To (Ledger) : ${reqTerms.payTo}`);
 
@@ -146,6 +180,7 @@ async function main() {
       description: challengeData.resource?.description,
       tokenName: reqTerms.extra?.name || "USD Coin",
       tokenVersion: reqTerms.extra?.version || "2",
+      extensions: challengeData.extensions,
     });
 
     console.log(`   • Nonce              : ${signed.paymentPayload.payload.authorization.nonce}`);
@@ -156,7 +191,6 @@ async function main() {
       headers: {
         "Content-Type": "application/json",
         "PAYMENT-SIGNATURE": signed.headerBase64,
-        "X-PAYMENT": signed.headerBase64,
       },
       body: JSON.stringify(payload),
     });
@@ -166,9 +200,11 @@ async function main() {
     console.log(JSON.stringify(paidData, null, 2));
 
     if (paidRes.status === 200) {
-      console.log("\n3️⃣  Verifying Coinbase CDP x402 Bazaar Discovery Indexing...");
+      console.log("\n3️⃣  Waiting 5s for Coinbase CDP x402 Bazaar async indexing...");
+      await new Promise((r) => setTimeout(r, 5000));
       const bazaarRes = await fetch(
-        "https://api.cdp.coinbase.com/platform/v2/x402/discovery/search?query=agent-distribution-gateway.vercel.app"
+        `https://api.cdp.coinbase.com/platform/v2/x402/discovery/search?payTo=${reqTerms.payTo}`,
+        { headers: { "Cache-Control": "no-cache" } }
       );
       const bazaarData = (await bazaarRes.json()) as { resources?: Array<Record<string, any>> };
       const matchedResources = (bazaarData.resources || []).filter((r) =>
@@ -179,7 +215,12 @@ async function main() {
       );
       console.log(`   • Bazaar Search Status : HTTP ${bazaarRes.status}`);
       console.log(`   • Indexed Resources    : ${matchedResources.length} matched for ${reqTerms.payTo}`);
-      console.log(JSON.stringify(matchedResources, null, 2));
+      if (matchedResources[0]) {
+        console.log(`   • lastUpdated          : ${matchedResources[0].lastUpdated}`);
+        console.log(`   • quality              : ${JSON.stringify(matchedResources[0].quality)}`);
+        console.log(`   • accepts[0].amount    : ${matchedResources[0].accepts?.[0]?.amount}`);
+      }
+      fs.writeFileSync("/tmp/bazaar_after_settle.json", JSON.stringify(matchedResources, null, 2));
     }
     return;
   }

@@ -43,6 +43,10 @@ function main() {
     ["X402_ENRICH_PRICE_USD", env.X402_ENRICH_PRICE_USD || "0.03"],
   ];
 
+  if (env.X402_OWNERSHIP_PROOF) {
+    varsToPush.push(["X402_OWNERSHIP_PROOF", env.X402_OWNERSHIP_PROOF]);
+  }
+
   const execEnv = {
     ...process.env,
     PATH: `/opt/homebrew/bin:${process.env.PATH || "/usr/bin:/bin"}`,

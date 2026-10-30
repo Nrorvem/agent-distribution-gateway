@@ -8,3 +8,8 @@ out/
 *.log
 .audit-logs.json
 
+.vercel
+.env*
+AGENTS.md
+.agentignore
+*.tsbuildinfo

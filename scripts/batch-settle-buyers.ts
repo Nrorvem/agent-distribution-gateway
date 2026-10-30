@@ -47,15 +47,28 @@ async function main() {
     process.exit(1);
   }
 
+  const args = process.argv.slice(2);
+  const countFlagIdx = args.findIndex((a) => a === "--count" || a === "--limit");
+  const countLimit =
+    countFlagIdx !== -1 && args[countFlagIdx + 1]
+      ? parseInt(args[countFlagIdx + 1], 10)
+      : undefined;
+
+  const delayFlagIdx = args.findIndex((a) => a === "--delay" || a === "--cooldown");
+  const delaySec =
+    delayFlagIdx !== -1 && args[delayFlagIdx + 1]
+      ? parseInt(args[delayFlagIdx + 1], 10)
+      : 3;
+
   const wallets: TestWallet[] = JSON.parse(fs.readFileSync(WALLETS_FILE, "utf-8"));
   console.log("================================================================================");
   console.log(`🌐 BATCH SETTLEMENT RUNNER: ${PRODUCTION_ENDPOINT}`);
-  console.log(`Loaded ${wallets.length} test buyer wallets`);
+  console.log(`Loaded ${wallets.length} test buyer wallets (Limit: ${countLimit || "All"})`);
   console.log("================================================================================\n");
 
   console.log("1️⃣  Scanning test buyer wallet balances on Base Mainnet...");
   const balances = await checkUsdcBalances(wallets);
-  const funded = balances.filter((b) => b.balanceAtomic >= 30000n);
+  let funded = balances.filter((b) => b.balanceAtomic >= 30000n);
 
   console.log(
     `Found ${funded.length} of ${wallets.length} wallets ready for on-chain settlement ($0.03+ USDC).\n`
@@ -65,6 +78,11 @@ async function main() {
     console.log("⚠️  No funded test wallets found.");
     console.log("Fund any of the addresses printed by `scripts/generate-test-wallets.ts` and re-run.");
     return;
+  }
+
+  if (countLimit && countLimit > 0) {
+    funded = funded.slice(0, countLimit);
+    console.log(`🎯 Constrained to first ${funded.length} wallet(s) as requested.\n`);
   }
 
   const results: Array<{
@@ -147,8 +165,11 @@ async function main() {
       results.push({ wallet, success: false, error: err.message });
     }
 
-    // Brief cooldown between on-chain facilitator settlements
-    await new Promise((r) => setTimeout(r, 2000));
+    // Cooldown between on-chain facilitator settlements
+    if (delaySec > 0) {
+      console.log(`   ⏳ Pausing ${delaySec}s before next transaction...\n`);
+      await new Promise((r) => setTimeout(r, delaySec * 1000));
+    }
   }
 
   console.log("\n================================================================================");

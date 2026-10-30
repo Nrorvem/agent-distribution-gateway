@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
     servers: [
       {
         url: origin,
-        description: "Production Agent Distribution Gateway",
+        description: "EnrichMatch B2B Enrichment Gateway",
       },
     ],
     paths: {

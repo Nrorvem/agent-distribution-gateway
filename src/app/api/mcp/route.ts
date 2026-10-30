@@ -57,8 +57,8 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     protocol: "mcp-streamable-http",
     serverInfo: {
-      name: "agent-distribution-apollo-broker",
-      version: "0.2.0",
+      name: "enrichmatch-apollo-broker",
+      version: "0.3.0",
     },
     paymentProtocol: "x402",
     x402Version: 2,
@@ -97,8 +97,8 @@ export async function POST(req: NextRequest) {
           tools: { listChanged: false },
         },
         serverInfo: {
-          name: "agent-distribution-apollo-broker",
-          version: "0.2.0",
+          name: "enrichmatch-apollo-broker",
+          version: "0.3.0",
         },
       },
     });

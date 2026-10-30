@@ -1,6 +1,6 @@
 # Public Deployment & Agent Directory Registration Guide
 
-Your gateway exposes six live machine-native endpoints on Vercel (`https://agent-distribution-gateway.vercel.app`):
+Your gateway exposes six live machine-native endpoints on EnrichMatch (`https://enrichmatch.dev`):
 
 | Endpoint | Path | Purpose |
 | :--- | :--- | :--- |
@@ -28,7 +28,7 @@ APOLLO_API_KEY=<your_scoped_apollo_api_key>
 APOLLO_MOCK_MODE=false
 X402_WALLET_ADDRESS=0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC
 X402_NETWORK=base
-X402_ENRICH_PRICE_USD=0.10
+X402_ENRICH_PRICE_USD=0.03
 X402_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402
 CDP_API_KEY_ID=<your_cdp_api_key_id>
 CDP_API_KEY_SECRET=<your_cdp_api_key_secret>
@@ -39,18 +39,18 @@ CDP_API_KEY_SECRET=<your_cdp_api_key_secret>
 ## 2. Discovery & Distribution Channels (Layer 4)
 
 ### A. `x402scan` / Poncho (`https://www.x402scan.com/resources/register`)
-- Submit origin: `https://agent-distribution-gateway.vercel.app` (or endpoint `https://agent-distribution-gateway.vercel.app/api/v1/enrich/person`).
+- Submit origin: `https://enrichmatch.dev` (or fallback `https://agent-distribution-gateway.vercel.app`).
 - `x402scan` automatically fetches `/openapi.json`, verifies `x402Version: 2` (`eip155:8453`, `PAYMENT-REQUIRED` header), loads `/favicon.ico`, and verifies origin ownership via `info.contact.email` (`info@nrorvem.com`).
 
 ### B. Official Coinbase `x402` Bazaar (`https://api.cdp.coinbase.com/platform/v2/x402`)
-- When `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` are active on Vercel, running a single real `$0.10 USDC` call via:
+- When `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` are active on Vercel, running a single real `$0.03 USDC` call via:
   ```bash
   /opt/homebrew/bin/node --experimental-strip-types scripts/live-onchain-buyer.ts
   ```
-  settles through Coinbase's Official Facilitator with `extensions.bazaar` attached, automatically indexing the endpoint into Coinbase's x402 Bazaar catalog while settling the `$0.10 USDC` back into your Ledger wallet (`0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC`).
+  settles through Coinbase's Official Facilitator with `extensions.bazaar` attached, automatically indexing the endpoint into Coinbase's x402 Bazaar catalog while settling the `$0.03 USDC` back into your Ledger wallet (`0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC`).
 
 ### C. Smithery (`https://smithery.ai`) & Glama (`https://glama.ai/mcp/servers`)
-- Connected to GitHub (`https://github.com/Nrorvem/agent-distribution-gateway`) and live MCP URL (`https://agent-distribution-gateway.vercel.app/api/mcp`).
+- Connected to GitHub (`https://github.com/Nrorvem/agent-distribution-gateway`) and live MCP URL (`https://enrichmatch.dev/api/mcp`).
 - Reads `smithery.yaml`, `glama.json`, and `server.json` at the repo root and dynamically queries `POST /api/mcp` (`tools/list`).
 
 ### D. Community `x402bazaar.org`

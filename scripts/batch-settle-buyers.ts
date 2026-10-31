@@ -58,7 +58,19 @@ async function main() {
   const delaySec =
     delayFlagIdx !== -1 && args[delayFlagIdx + 1]
       ? parseInt(args[delayFlagIdx + 1], 10)
-      : 3;
+      : 5;
+
+  const walletFlagIdx = args.findIndex((a) => a === "--wallet" || a === "--target");
+  const targetWalletIndex =
+    walletFlagIdx !== -1 && args[walletFlagIdx + 1]
+      ? parseInt(args[walletFlagIdx + 1], 10)
+      : undefined;
+
+  const repeatFlagIdx = args.findIndex((a) => a === "--repeat" || a === "--times");
+  const repeatCount =
+    repeatFlagIdx !== -1 && args[repeatFlagIdx + 1]
+      ? parseInt(args[repeatFlagIdx + 1], 10)
+      : 1;
 
   const wallets: TestWallet[] = JSON.parse(fs.readFileSync(WALLETS_FILE, "utf-8"));
   console.log("================================================================================");
@@ -80,9 +92,138 @@ async function main() {
     return;
   }
 
-  if (countLimit && countLimit > 0) {
-    funded = funded.slice(0, countLimit);
-    console.log(`🎯 Constrained to first ${funded.length} wallet(s) as requested.\n`);
+  // Single-wallet multi-transaction mode (e.g., --wallet 3 --repeat 5)
+  if (targetWalletIndex !== undefined) {
+    const target = wallets.find((w) => w.index === targetWalletIndex);
+    if (!target) {
+      console.error(`❌ Wallet #${targetWalletIndex} not found in .test-buyer-wallets.json.`);
+      process.exit(1);
+    }
+
+    console.log(`🎯 Targeting Single Wallet #${target.index} (${target.address})`);
+    console.log(`🔁 Repeating ${repeatCount} consecutive transaction(s) to simulate real multi-call buyer...\n`);
+
+    const results: Array<{
+      iteration: number;
+      txHash?: string;
+      email?: string;
+      success: boolean;
+      error?: string;
+    }> = [];
+
+    // Profiles 2 through 6 for variety
+    const singleWalletProfiles = [
+      { first_name: "Patrick", last_name: "Collison", domain: "stripe.com" },
+      { first_name: "Marc", last_name: "Benioff", domain: "salesforce.com" },
+      { first_name: "Jensen", last_name: "Huang", domain: "nvidia.com" },
+      { first_name: "Satya", last_name: "Nadella", domain: "microsoft.com" },
+      { first_name: "Sam", last_name: "Altman", domain: "openai.com" },
+      { first_name: "Fidji", last_name: "Simo", domain: "instacart.com" },
+      { first_name: "Brian", last_name: "Chesky", domain: "airbnb.com" },
+      { first_name: "Dara", last_name: "Khosrowshahi", domain: "uber.com" },
+    ];
+
+    for (let i = 1; i <= repeatCount; i++) {
+      const profile = singleWalletProfiles[(i - 1) % singleWalletProfiles.length];
+      console.log("--------------------------------------------------------------------------------");
+      console.log(
+        `▶️  [Tx ${i}/${repeatCount}] Wallet #${target.index} -> Prospect: ${profile.first_name} ${profile.last_name} (${profile.domain})`
+      );
+
+      try {
+        const chRes = await fetch(PRODUCTION_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(profile),
+        });
+
+        if (chRes.status !== 402) {
+          throw new Error(`Expected HTTP 402, got HTTP ${chRes.status}`);
+        }
+
+        const challenge = (await chRes.json()) as Record<string, any>;
+        const terms = challenge.accepts?.[0];
+        const atomicAmount = String(terms?.amount || "30000");
+
+        const signed = buildSignedX402PaymentHeader({
+          privateKeyHex: target.privateKey,
+          network: terms.network || "eip155:8453",
+          usdcAddress: terms.asset,
+          payTo: terms.payTo,
+          valueAtomic: atomicAmount,
+          resourceUrl: challenge.resource?.url || PRODUCTION_ENDPOINT,
+          description: challenge.resource?.description,
+          tokenName: terms.extra?.name || "USD Coin",
+          tokenVersion: terms.extra?.version || "2",
+          extensions: challenge.extensions,
+        });
+
+        const enrichRes = await fetch(PRODUCTION_ENDPOINT, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "PAYMENT-SIGNATURE": signed.headerBase64,
+          },
+          body: JSON.stringify(profile),
+        });
+
+        const enrichData = (await enrichRes.json()) as Record<string, any>;
+
+        if (enrichRes.status === 200 && enrichData.payment_settled) {
+          const txHash = enrichData.receipt?.tx_hash;
+          const email = enrichData.person?.email;
+          console.log(`   ✅ Succeeded! Match: ${enrichData.person?.full_name} (${email})`);
+          console.log(`   🪙 Settled $0.03 USDC to Ledger: ${terms.payTo}`);
+          console.log(`   🔗 Tx Hash  : ${txHash}`);
+          console.log(`   🌐 BaseScan : https://basescan.org/tx/${txHash}`);
+          results.push({ iteration: i, txHash, email, success: true });
+        } else {
+          const err = enrichData.error || `HTTP ${enrichRes.status}`;
+          console.log(`   ❌ Settlement failed: ${err}`);
+          results.push({ iteration: i, success: false, error: err });
+        }
+      } catch (err: any) {
+        console.log(`   ❌ Error: ${err.message}`);
+        results.push({ iteration: i, success: false, error: err.message });
+      }
+
+      if (i < repeatCount && delaySec > 0) {
+        console.log(`   ⏳ Pausing ${delaySec}s before next consecutive settlement...\n`);
+        await new Promise((r) => setTimeout(r, delaySec * 1000));
+      }
+    }
+
+    console.log("\n================================================================================");
+    console.log(`MULTI-CALL SUMMARY FOR WALLET #${target.index} (${target.address})`);
+    console.log("================================================================================");
+    const succeeded = results.filter((r) => r.success);
+    console.log(`Total Settlements Attempted : ${results.length}`);
+    console.log(`Successful Settlements      : ${succeeded.length}`);
+    console.log(`Total USDC Recycled to Ledger : $${(succeeded.length * 0.03).toFixed(2)} USDC\n`);
+
+    for (const r of succeeded) {
+      console.log(`• Tx #${r.iteration}: https://basescan.org/tx/${r.txHash}`);
+    }
+
+    console.log("\nQuerying updated Coinbase CDP x402 Bazaar telemetry...");
+    try {
+      await new Promise((r) => setTimeout(r, 4000));
+      const bzRes = await fetch(
+        "https://api.cdp.coinbase.com/platform/v2/x402/discovery/search?payTo=0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC",
+        { headers: { "Cache-Control": "no-cache" } }
+      );
+      const bzData = (await bzRes.json()) as { resources?: Array<Record<string, any>> };
+      const emResource = (bzData.resources || []).find((r) =>
+        r.resource?.includes("enrichmatch.dev")
+      );
+      if (emResource) {
+        console.log(`• enrichmatch.dev Last Updated: ${emResource.lastUpdated}`);
+        console.log(`• Quality Metrics             : ${JSON.stringify(emResource.quality)}`);
+      }
+    } catch {
+      // Ignore
+    }
+    return;
   }
 
   const results: Array<{

@@ -1,9 +1,11 @@
 /**
- * Staggered Settlement Runner (Random gaps between 2m and 25m)
+ * Dynamic Staggered Settlement Runner for All Remaining Funded Wallets
+ *
+ * Random gaps between 2m (120s) and 25m (1500s).
  *
  * Usage:
  *   /opt/homebrew/bin/node --experimental-strip-types scripts/staggered-settlements.ts
- *   nohup /opt/homebrew/bin/node --experimental-strip-types scripts/staggered-settlements.ts > scripts/staggered-settlements.log 2>&1 &
+ *   nohup /opt/homebrew/bin/node --experimental-strip-types scripts/staggered-settlements.ts > scripts/staggered-settlements.out 2>&1 &
  */
 
 import fs from "node:fs";
@@ -17,10 +19,16 @@ const LOG_FILE = path.resolve(process.cwd(), "scripts/staggered-settlements.log"
 const PRODUCTION_ENDPOINT =
   process.env.GATEWAY_ENDPOINT || "https://enrichmatch.dev/api/v1/enrich/person";
 
+// Diverse executive profiles with 100% verified deliverable work emails
 const PROFILES = [
-  { first_name: "Dara", last_name: "Khosrowshahi", domain: "uber.com" },
-  { first_name: "Alexis", last_name: "Ohanian", domain: "776.org" },
-  { first_name: "Drew", last_name: "Houston", domain: "dropbox.com" },
+  { first_name: "Aaron", last_name: "Levie", domain: "box.com" },
+  { first_name: "Patrick", last_name: "Collison", domain: "stripe.com" },
+  { first_name: "Satya", last_name: "Nadella", domain: "microsoft.com" },
+  { first_name: "Brian", last_name: "Chesky", domain: "airbnb.com" },
+  { first_name: "Fidji", last_name: "Simo", domain: "instacart.com" },
+  { first_name: "Jensen", last_name: "Huang", domain: "nvidia.com" },
+  { first_name: "Sam", last_name: "Altman", domain: "openai.com" },
+  { first_name: "Marc", last_name: "Benioff", domain: "salesforce.com" },
 ];
 
 function log(msg: string) {
@@ -105,60 +113,82 @@ async function main() {
     process.exit(1);
   }
 
+  const args = process.argv.slice(2);
+  const minDelayMin = 2;
+  const maxDelayMin = 25;
+
   const wallets: TestWallet[] = JSON.parse(fs.readFileSync(WALLETS_FILE, "utf-8"));
   log(`================================================================================`);
-  log(`🌐 STAGGERED SETTLEMENT RUNNER: ${PRODUCTION_ENDPOINT}`);
+  log(`🌐 STAGGERED SETTLEMENT RUNNER: ALL REMAINING FUNDED WALLETS`);
+  log(`   Endpoint: ${PRODUCTION_ENDPOINT}`);
+  log(`   Random Gap Window: ${minDelayMin}m – ${maxDelayMin}m per settlement`);
   log(`================================================================================`);
 
   const balances = await checkUsdcBalances(wallets);
   const funded = balances.filter((b) => b.balanceAtomic >= 30000n);
 
-  if (funded.length < 3) {
-    log(`⚠️  Need at least 3 funded wallets, found ${funded.length}.`);
-    process.exit(1);
+  if (funded.length === 0) {
+    log(`⚠️  No funded wallets found ready to settle ($0.03+ USDC).`);
+    process.exit(0);
   }
 
-  const targets = funded.slice(0, 3);
-  log(`Selected 3 funded wallets for staggered execution:`);
-  for (let i = 0; i < targets.length; i++) {
-    log(`  [${i + 1}] Wallet #${targets[i].wallet.index} (${targets[i].wallet.address}) - $${targets[i].balanceUsd}`);
+  log(`Found ${funded.length} remaining funded wallet(s):`);
+  for (let i = 0; i < funded.length; i++) {
+    log(`  [${i + 1}/${funded.length}] Wallet #${funded[i].wallet.index} (${funded[i].wallet.address}) - $${funded[i].balanceUsd}`);
   }
 
-  // Pre-calculate random gaps between 2m (120s) and 25m (1500s)
-  const gap1Sec = getRandomGapSec(2, 25);
-  const gap2Sec = getRandomGapSec(2, 25);
+  const results: Array<any> = [];
 
-  log(`\nSchedule plan:`);
-  log(`• Settlement #1: Executing IMMEDIATELY`);
-  log(`• Gap #1: ${(gap1Sec / 60).toFixed(1)} minutes (${gap1Sec}s)`);
-  log(`• Settlement #2: Scheduled at ~${new Date(Date.now() + gap1Sec * 1000).toLocaleTimeString()}`);
-  log(`• Gap #2: ${(gap2Sec / 60).toFixed(1)} minutes (${gap2Sec}s)`);
-  log(`• Settlement #3: Scheduled at ~${new Date(Date.now() + (gap1Sec + gap2Sec) * 1000).toLocaleTimeString()}\n`);
+  for (let i = 0; i < funded.length; i++) {
+    const item = funded[i];
+    const profile = PROFILES[i % PROFILES.length];
+    const txNum = i + 1;
+    const total = funded.length;
 
-  // Execute Tx 1
-  const res1 = await settleOne(targets[0].wallet, PROFILES[0], 1, 3);
+    // Execute settlement
+    const res = await settleOne(item.wallet, profile, txNum, total);
+    results.push(res);
 
-  // Wait Gap 1
-  log(`⏳ Waiting ${(gap1Sec / 60).toFixed(1)}m (${gap1Sec}s) before Settlement #2...`);
-  await new Promise((r) => setTimeout(r, gap1Sec * 1000));
-
-  // Execute Tx 2
-  const res2 = await settleOne(targets[1].wallet, PROFILES[1], 2, 3);
-
-  // Wait Gap 2
-  log(`⏳ Waiting ${(gap2Sec / 60).toFixed(1)}m (${gap2Sec}s) before Settlement #3...`);
-  await new Promise((r) => setTimeout(r, gap2Sec * 1000));
-
-  // Execute Tx 3
-  const res3 = await settleOne(targets[2].wallet, PROFILES[2], 3, 3);
+    // If there is another wallet left to process, wait a random gap between 2m and 25m
+    if (i < funded.length - 1) {
+      const gapSec = getRandomGapSec(minDelayMin, maxDelayMin);
+      const gapMin = (gapSec / 60).toFixed(1);
+      const nextTime = new Date(Date.now() + gapSec * 1000).toLocaleTimeString();
+      log(`⏳ Waiting ${gapMin} minutes (${gapSec}s) before next wallet... (Scheduled at ~${nextTime})\n`);
+      await new Promise((r) => setTimeout(r, gapSec * 1000));
+    }
+  }
 
   log(`\n================================================================================`);
-  log(`🎉 STAGGERED SETTLEMENT COMPLETE`);
+  log(`🎉 ALL REMAINING SETTLEMENTS COMPLETED`);
   log(`================================================================================`);
-  log(`Settlement #1 (Wallet #${targets[0].wallet.index}): https://basescan.org/tx/${res1.txHash}`);
-  log(`Settlement #2 (Wallet #${targets[1].wallet.index}): https://basescan.org/tx/${res2.txHash}`);
-  log(`Settlement #3 (Wallet #${targets[2].wallet.index}): https://basescan.org/tx/${res3.txHash}`);
-  log(`Total USDC recycled to Ledger: $0.09 USDC`);
+  const succeeded = results.filter((r) => r.success);
+  log(`Total Processed : ${results.length}`);
+  log(`Successful      : ${succeeded.length}`);
+  log(`Total Recycled to Ledger: $${(succeeded.length * 0.03).toFixed(2)} USDC\n`);
+
+  for (const r of succeeded) {
+    log(`• Wallet #${r.wallet.index} (${r.wallet.address.slice(0, 10)}...): https://basescan.org/tx/${r.txHash}`);
+  }
+
+  log(`\nQuerying updated Coinbase CDP x402 Bazaar telemetry...`);
+  try {
+    await new Promise((r) => setTimeout(r, 4000));
+    const bzRes = await fetch(
+      "https://api.cdp.coinbase.com/platform/v2/x402/discovery/search?payTo=0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC",
+      { headers: { "Cache-Control": "no-cache" } }
+    );
+    const bzData = (await bzRes.json()) as { resources?: Array<Record<string, any>> };
+    const emResource = (bzData.resources || []).find((r) =>
+      r.resource?.includes("enrichmatch.dev")
+    );
+    if (emResource) {
+      log(`• enrichmatch.dev Last Updated: ${emResource.lastUpdated}`);
+      log(`• Quality Metrics             : ${JSON.stringify(emResource.quality)}`);
+    }
+  } catch {
+    // Ignore
+  }
 }
 
 main().catch((err) => {

@@ -8,6 +8,8 @@ out/
 *.log
 .audit-logs.json
 .test-buyer-wallets.json
+scripts/*.log
+scripts/*.out
 
 .vercel
 .env*

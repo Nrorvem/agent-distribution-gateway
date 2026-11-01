@@ -14,6 +14,21 @@
 import { PERSON_ENRICH_JSON_SCHEMA } from "../verticals/option-a-apollo/schema.ts";
 import { signPersonalMessage } from "./eip3009-signer.ts";
 
+export interface PaidResourceSpec {
+  /** USD price as a decimal string, e.g. "0.02". */
+  priceUsd: string;
+  /** Per-resource `extensions.bazaar` block. Omit to keep the legacy person-enrich block. */
+  bazaar?: Record<string, unknown>;
+  /** Overrides the challenge `error` text (billing-policy wording). */
+  challengeMessage?: string;
+}
+
+export function usdToAtomicUnits(priceUsd: string): string {
+  // String-based to avoid float drift; USDC has 6 decimals.
+  const [whole, frac = ""] = priceUsd.trim().split(".");
+  return (BigInt(whole || "0") * 1_000_000n + BigInt((frac + "000000").slice(0, 6))).toString();
+}
+
 export interface X402PaymentRequirement {
   scheme: "exact";
   network: "eip155:8453" | "eip155:84532" | "base" | "base-sepolia";
@@ -530,15 +545,111 @@ const BAZAAR_COMPACT_OUTPUT_EXAMPLE_SCHEMA = {
   },
 };
 
+export const DEFAULT_CHALLENGE_MESSAGE =
+  "Payment Required. Attach a signed x402 USDC payment payload in the PAYMENT-SIGNATURE (or X-PAYMENT) header. Free-on-Miss: your payment is ONLY settled on-chain if a verified person profile with a deliverable email is found ($0.00 charged on misses).";
+
+export const PERSON_ENRICH_BAZAAR_EXTENSION = {
+  info: {
+    input: {
+      type: "http",
+      method: "POST",
+      bodyType: "json",
+      discoverable: true,
+      body: {
+        first_name: "Fidji",
+        last_name: "Simo",
+        domain: "instacart.com",
+      },
+    },
+    output: {
+      type: "json",
+      example: {
+        matched: true,
+        payment_settled: true,
+        timestamp: "2026-10-17T23:00:39.000Z",
+        latency_ms: 420,
+        source: "apollo_live",
+        person: {
+          apollo_id: "64a1b2c3d4e5f60001234567",
+          full_name: "Fidji Simo",
+          title: "CEO & Chair",
+          seniority: "c_suite",
+          departments: ["c_suite"],
+          email: "fidji@instacart.com",
+          email_status: "verified",
+          linkedin_url: "https://www.linkedin.com/in/fidjisimo",
+          location: {
+            city: "San Francisco",
+            state: "California",
+            country: "United States",
+          },
+          organization: {
+            id: "5f1a2b3c4d5e6f0001112222",
+            name: "Instacart",
+            website_url: "https://www.instacart.com",
+            primary_domain: "instacart.com",
+            industry: "information technology & services",
+            estimated_num_employees: 3000,
+            linkedin_url: "https://www.linkedin.com/company/instacart",
+            founded_year: 2012,
+          },
+          employment_history: [
+            {
+              title: "CEO & Chair",
+              organization_name: "Instacart",
+              start_date: "2021-08-01",
+              end_date: "present",
+              current: true,
+            },
+          ],
+        },
+      },
+    },
+  },
+  schema: {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    type: "object",
+    required: ["input", "output"],
+    properties: {
+      input: {
+        type: "object",
+        required: ["type", "method", "bodyType", "body"],
+        properties: {
+          type: { type: "string", const: "http" },
+          method: { type: "string", enum: ["POST"] },
+          bodyType: { type: "string", enum: ["json"] },
+          discoverable: { type: "boolean" },
+          body: BAZAAR_COMPACT_INPUT_BODY_SCHEMA,
+        },
+      },
+      output: {
+        type: "object",
+        required: ["type", "example"],
+        properties: {
+          type: { type: "string", const: "json" },
+          example: BAZAAR_COMPACT_OUTPUT_EXAMPLE_SCHEMA,
+        },
+      },
+    },
+  },
+};
+
 /**
  * Generates the standard x402 v2 HTTP 402 Payment Required challenge payload.
  */
-export function buildX402Challenge(resourceUrl: string, description: string): X402ChallengePayload {
+export function buildX402Challenge(
+  resourceUrl: string,
+  description: string,
+  spec?: PaidResourceSpec
+): X402ChallengePayload {
   const cfg = getGateConfig();
+  const amount = spec ? usdToAtomicUnits(spec.priceUsd) : cfg.atomicUnits;
+  const error = spec?.challengeMessage ?? DEFAULT_CHALLENGE_MESSAGE;
+  const bazaar = spec?.bazaar ?? PERSON_ENRICH_BAZAAR_EXTENSION;
+
   return {
     x402Version: 2,
-    error:
-      "Payment Required. Attach a signed x402 USDC payment payload in the PAYMENT-SIGNATURE (or X-PAYMENT) header. Free-on-Miss: your payment is ONLY settled on-chain if a verified person profile with a deliverable email is found ($0.00 charged on misses).",
+    error,
     resource: {
       url: resourceUrl,
       description,
@@ -548,7 +659,7 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
       {
         scheme: "exact",
         network: cfg.networkCaip2,
-        amount: cfg.atomicUnits,
+        amount,
         asset: cfg.asset,
         payTo: cfg.payTo,
         maxTimeoutSeconds: 60,
@@ -559,91 +670,7 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
       },
     ],
     extensions: {
-      bazaar: {
-        info: {
-          input: {
-            type: "http",
-            method: "POST",
-            bodyType: "json",
-            discoverable: true,
-            body: {
-              first_name: "Fidji",
-              last_name: "Simo",
-              domain: "instacart.com",
-            },
-          },
-          output: {
-            type: "json",
-            example: {
-              matched: true,
-              payment_settled: true,
-              timestamp: "2026-10-17T23:00:39.000Z",
-              latency_ms: 420,
-              source: "apollo_live",
-              person: {
-                apollo_id: "64a1b2c3d4e5f60001234567",
-                full_name: "Fidji Simo",
-                title: "CEO & Chair",
-                seniority: "c_suite",
-                departments: ["c_suite"],
-                email: "fidji@instacart.com",
-                email_status: "verified",
-                linkedin_url: "https://www.linkedin.com/in/fidjisimo",
-                location: {
-                  city: "San Francisco",
-                  state: "California",
-                  country: "United States",
-                },
-                organization: {
-                  id: "5f1a2b3c4d5e6f0001112222",
-                  name: "Instacart",
-                  website_url: "https://www.instacart.com",
-                  primary_domain: "instacart.com",
-                  industry: "information technology & services",
-                  estimated_num_employees: 3000,
-                  linkedin_url: "https://www.linkedin.com/company/instacart",
-                  founded_year: 2012,
-                },
-                employment_history: [
-                  {
-                    title: "CEO & Chair",
-                    organization_name: "Instacart",
-                    start_date: "2021-08-01",
-                    end_date: "present",
-                    current: true,
-                  },
-                ],
-              },
-            },
-          },
-        },
-        schema: {
-          $schema: "https://json-schema.org/draft/2020-12/schema",
-          type: "object",
-          required: ["input", "output"],
-          properties: {
-            input: {
-              type: "object",
-              required: ["type", "method", "bodyType", "body"],
-              properties: {
-                type: { type: "string", const: "http" },
-                method: { type: "string", enum: ["POST"] },
-                bodyType: { type: "string", enum: ["json"] },
-                discoverable: { type: "boolean" },
-                body: BAZAAR_COMPACT_INPUT_BODY_SCHEMA,
-              },
-            },
-            output: {
-              type: "object",
-              required: ["type", "example"],
-              properties: {
-                type: { type: "string", const: "json" },
-                example: BAZAAR_COMPACT_OUTPUT_EXAMPLE_SCHEMA,
-              },
-            },
-          },
-        },
-      },
+      bazaar: bazaar as any,
     },
   };
 }
@@ -845,7 +872,7 @@ export async function verifyX402Payment(
   paymentHeader: string | null,
   resourceUrl: string,
   description: string,
-  options?: { verifyOnly?: boolean }
+  options?: { verifyOnly?: boolean; spec?: PaidResourceSpec }
 ): Promise<{
   verified: boolean;
   settled?: boolean;
@@ -917,7 +944,7 @@ export async function verifyX402Payment(
   }
 
   // 3. Verify (and optionally settle) EIP-3009 off-chain signature against the x402 Facilitator (Path B)
-  const challenge = buildX402Challenge(resourceUrl, description);
+  const challenge = buildX402Challenge(resourceUrl, description, options?.spec);
   const v2Requirement = challenge.accepts[0];
 
   let paymentPayload: Record<string, any> | undefined;
@@ -944,7 +971,7 @@ export async function verifyX402Payment(
       ? {
           scheme: "exact",
           network: cfg.network,
-          maxAmountRequired: cfg.atomicUnits,
+          maxAmountRequired: options?.spec ? usdToAtomicUnits(options.spec.priceUsd) : cfg.atomicUnits,
           resource: resourceUrl,
           description,
           mimeType: "application/json",

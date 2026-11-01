@@ -694,3 +694,57 @@ export function getProductByMcpTool(mcpTool: string): ApolloProduct | undefined 
 export function getProductByPath(path: string): ApolloProduct | undefined {
   return APOLLO_PRODUCTS.find((p) => p.path === path);
 }
+
+/** Generates standard MCP tool descriptors across all catalog products */
+export function getMcpToolsList() {
+  return [
+    {
+      name: "get_enrichment_quote",
+      description:
+        "FREE pre-flight discovery tool: Inspect live x402 pricing ($0.03 USDC on Base, Free-on-Miss), deterministic JSON input/output schema, SLA latency telemetry, and recent verifiable Base settlement txHashes for Apollo.io B2B Person Enrichment & Work Email Lookup.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          tool: {
+            type: "string",
+            description: "Optional tool name to inspect pricing and schema for a specific product.",
+          },
+        },
+      },
+    },
+    ...APOLLO_PRODUCTS.map((p) => {
+      if (p.id === "enrich_person") {
+        return {
+          name: "enrich_person",
+          description:
+            "PAID ($0.03 USDC via x402 on Base — Free-on-Miss: $0.00 charged if no deliverable email is found): Verified B2B Person Enrichment, Work Email Finder & LinkedIn-to-Email Resolver powered by Apollo.io. Accepts partial identifiers—(1) first_name + last_name + company domain or organization_name, (2) LinkedIn profile URL (linkedin_url), or (3) email (reverse email lookup)—and returns a deterministic JSON profile with deliverable work email, verification status, job title, seniority (founder, C-suite, VP, director), company firmographics (headcount, industry, founded year), and full employment history. Zero signup or API key required.",
+          inputSchema: {
+            ...p.inputSchema,
+            properties: {
+              ...((p.inputSchema.properties as Record<string, unknown>) || {}),
+              _x402_payment: {
+                type: "string",
+                description:
+                  "Optional x402 signed payment payload (if not passed via HTTP X-PAYMENT header)",
+              },
+            },
+          },
+        };
+      }
+      return {
+        name: p.mcpTool,
+        description: `PAID ($${p.pricing.unitUsd()} USDC / ${p.pricing.per} via x402 on Base — Free-on-Miss: ${p.pricing.billingRule}): ${p.description}`,
+        inputSchema: {
+          ...p.inputSchema,
+          properties: {
+            ...((p.inputSchema.properties as Record<string, unknown>) || {}),
+            _x402_payment: {
+              type: "string",
+              description: "Optional x402 signed payment payload (if not passed via HTTP X-PAYMENT header)",
+            },
+          },
+        },
+      };
+    }),
+  ];
+}

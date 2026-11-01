@@ -1,35 +1,78 @@
 import { NextRequest, NextResponse } from "next/server";
-import { PERSON_ENRICH_JSON_SCHEMA } from "@/verticals/option-a-apollo/schema";
 import { getGateConfig, getVerifiableTelemetrySummary, resolveGatewayOrigin } from "@/lib/x402-gate";
+import { APOLLO_PRODUCTS } from "@/verticals/option-a-apollo/catalog";
 
 /**
  * Layer 4: Open-Web Protocol Discovery — A2A Agent Card
  * Endpoint: GET /.well-known/agent.json
  *
- * Upgraded with:
- * - Strategy B (Agent SEO): High-intent semantic descriptions, capability keywords,
- *   and example natural-language queries so LLM routers and vector registries rank
- *   this endpoint at the top for B2B contact/email/LinkedIn enrichment tasks.
- * - Strategy D (Verifiable On-Chain Telemetry): Exposes `recentSettlementTxHashes`
- *   and `recentSettlementProofs` with BaseScan URLs so visiting buyer agents can
- *   verify cryptographic settlement history.
+ * Full-funnel edition with:
+ * - Complete A2A skills across Search Organizations, Search People, Enrich Person, Enrich Org, Bulk
+ * - Verifiable On-Chain Telemetry (BaseScan URLs)
+ * - Free-on-Miss cryptographic settlement guarantees
  */
 export async function GET(req: NextRequest) {
   const origin = resolveGatewayOrigin(req);
   const cfg = getGateConfig(origin);
   const telemetry = getVerifiableTelemetrySummary();
 
+  const endpointsMap: Record<string, string> = {
+    mcp: `${origin}/api/mcp`,
+    catalog: `${origin}/api/v1/catalog`,
+    openapi_json: `${origin}/openapi.json`,
+    llms_txt: `${origin}/llms.txt`,
+  };
+  for (const p of APOLLO_PRODUCTS) {
+    endpointsMap[`rest_${p.id}`] = `${origin}${p.path}`;
+  }
+
+  const skills = APOLLO_PRODUCTS.map((p) => {
+    return {
+      id: p.id.replace(/_/g, "-"),
+      name: p.title,
+      description: `${p.description} Free-on-Miss: ${p.pricing.billingRule}`,
+      tags: [...p.tags, "x402", "free-on-miss", "mcp", "base-usdc"],
+      matchingIntents: [
+        `Execute ${p.title} without an Apollo subscription`,
+        `Pay-per-call ${p.mcpTool} via x402 on Base`,
+        `Full-funnel B2B workflow step: ${p.funnelStage}`,
+      ],
+      pricing: {
+        model: "free_on_miss",
+        unitPriceUsd: p.pricing.unitUsd(),
+        per: p.pricing.per,
+        currency: "USDC",
+        network: cfg.networkCaip2,
+        freeOnMiss: true,
+      },
+      sla: {
+        p95LatencyMs: 850,
+        averageLatencyMs: telemetry.averageLatencyMs,
+        uptimeTarget: "99.9%",
+        attributeCompletenessTarget: "95%+",
+        fulfillmentSuccessRate: telemetry.fulfillmentSuccessRate,
+        freeOnMiss: true,
+        recentCompletedTransactions: telemetry.totalCompletedTransactions,
+        verifiedOnChainSettlements: telemetry.verifiedOnChainSettlements,
+        recentSettlementTxHashes: telemetry.recentSettlementTxHashes,
+        recentSettlementProofs: telemetry.recentSettlementProofs,
+      },
+      inputSchema: p.inputSchema,
+      outputSchema: p.outputSchema,
+    };
+  });
+
   return NextResponse.json({
     schema_version: "a2a-1.0",
-    name: "Apollo.io B2B Person Enrichment & Verified Work Email Finder (x402)",
+    name: "Apollo.io Full-Funnel B2B Data Gateway (x402)",
     description:
-      `Zero-signup, pay-per-match B2B Person Enrichment, Executive Work Email Finder, and LinkedIn-to-Email Resolver powered by Apollo.io ($${cfg.priceUsd} USDC on Base Mainnet via x402 v2 — Free-on-Miss: $0.00 charged if no deliverable email is found). Resolve (1) first_name + last_name + company domain/name, (2) LinkedIn profile URL, or (3) email into a deterministic JSON profile with verified work email, job title, seniority, firmographics (headcount, industry, founded year), and full employment history.`,
+      "Zero-signup, pay-per-call full-funnel B2B intelligence for AI agents: Company Search ($0.02), People Search ($0.01), Person Enrichment & Work Email Resolution ($0.03), Company Firmographics & Tech Stack ($0.02), and Bulk Batch Processing ($0.015-$0.025/ea) on Base Mainnet via x402 v2 — Free-on-Miss ($0.00 charged if zero billable results found).",
     url: origin,
     provider: {
       organization: "Apollo.io B2B Enrichment Gateway",
       contact: "info@nrorvem.com",
     },
-    version: "0.3.0",
+    version: "0.4.0",
     capabilities: {
       streaming: false,
       pushNotifications: false,
@@ -42,7 +85,7 @@ export async function GET(req: NextRequest) {
       schemes: ["x402"],
       credentialsRequired: false,
       description:
-        "Payment IS the credential. Send requests directly to /api/v1/enrich/person or /api/mcp; settle the HTTP 402 challenge with USDC on Base via the PAYMENT-SIGNATURE (or X-PAYMENT) header. Free-on-Miss: payment is only settled on-chain when a deliverable email is returned.",
+        "Payment IS the credential. Send requests directly to REST endpoints or /api/mcp; settle the HTTP 402 challenge with USDC on Base via the PAYMENT-SIGNATURE (or X-PAYMENT) header. Free-on-Miss: payments are only settled on-chain when verified deliverable results are found.",
     },
     paymentRails: [
       {
@@ -53,67 +96,14 @@ export async function GET(req: NextRequest) {
         legacyNetwork: cfg.network,
         asset: cfg.asset,
         symbol: "USDC",
-        priceUsd: cfg.priceUsd,
-        amountAtomic: cfg.atomicUnits,
+        priceUsdMin: "0.01",
+        priceUsdMax: "0.03",
         freeOnMiss: true,
         recipientWallet: cfg.payTo,
         facilitatorUrl: cfg.facilitatorUrl,
       },
     ],
-    endpoints: {
-      mcp: `${origin}/api/mcp`,
-      rest_enrich_person: `${origin}/api/v1/enrich/person`,
-      openapi_json: `${origin}/openapi.json`,
-      llms_txt: `${origin}/llms.txt`,
-    },
-    skills: [
-      {
-        id: "b2b-person-enrichment",
-        name: "Verified B2B Person Enrichment & Work Email Lookup (Free-on-Miss)",
-        description:
-          "Hydrates partial person identifiers (name + domain/company, LinkedIn URL, or reverse email) into a verified B2B executive/prospect profile via Apollo.io /api/v1/people/match. Free-on-Miss: only settles payment ($0.03 USDC) when a deliverable email is returned.",
-        tags: [
-          "b2b-enrichment",
-          "work-email-finder",
-          "linkedin-to-email",
-          "reverse-email-lookup",
-          "executive-contact-lookup",
-          "lead-enrichment",
-          "firmographics",
-          "sales-intelligence",
-          "apollo",
-          "x402",
-          "free-on-miss",
-          "mcp",
-        ],
-        matchingIntents: [
-          "Find verified work email for a founder, CEO, VP, or engineer at a company domain",
-          "Convert a LinkedIn profile URL into a deliverable corporate email and job title",
-          "Enrich an email address with full name, seniority, company headcount, and employment history",
-          "Look up B2B lead contact details without an Apollo or ZoomInfo subscription",
-        ],
-        pricing: {
-          model: "per_match_free_on_miss",
-          amount: cfg.priceUsd,
-          currency: "USDC",
-          network: cfg.networkCaip2,
-          freeOnMiss: true,
-        },
-        sla: {
-          p95LatencyMs: 850,
-          averageLatencyMs: telemetry.averageLatencyMs,
-          uptimeTarget: "99.9%",
-          attributeCompletenessTarget: "95%+",
-          fulfillmentSuccessRate: telemetry.fulfillmentSuccessRate,
-          freeOnMiss: true,
-          recentCompletedTransactions: telemetry.totalCompletedTransactions,
-          verifiedOnChainSettlements: telemetry.verifiedOnChainSettlements,
-          recentSettlementTxHashes: telemetry.recentSettlementTxHashes,
-          recentSettlementProofs: telemetry.recentSettlementProofs,
-        },
-        inputSchema: PERSON_ENRICH_JSON_SCHEMA.input,
-        outputSchema: PERSON_ENRICH_JSON_SCHEMA.output,
-      },
-    ],
+    endpoints: endpointsMap,
+    skills,
   });
 }

@@ -8,27 +8,28 @@ We are pushing all three fronts sequentially inside a unified gateway architectu
 
 | Front | Vertical | Supply Source | Target Agent Buyer | Protocol & Payment Stack | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Option A** | **Unbundled SaaS Utility Broker** | **Apollo.io** (`/api/v1/people/match` Person Enrichment) | Sales, coding, and autonomous research agents | **MCP** (`/api/mcp`) + **REST `x402`** (`$0.10` USDC on Base) | **Active (Phase 1)** |
+| **Option A** | **Full-Funnel B2B Data Gateway** | **Apollo.io** (Search + Single & Bulk Enrichment) | Sales, coding, and autonomous research agents | **MCP** (`/api/mcp`) + **REST `x402`** (`$0.01–$0.03` USDC on Base) | **Shipped (Phase 1 & Phase 1b)** |
 | **Option B** | **Digital Infrastructure Concierge** | Ephemeral sandboxes, domains, or SMS/telecom APIs | Autonomous dev/ops agents spinning up projects | **MCP / A2A** (`/.well-known/agent.json`) + **`x402` / Stripe MPP** | **Planned (Phase 2)** |
 | **Option C** | **Physical Niche Aggregator** | High-margin custom swag / print-on-demand / gifting | Personal assistants & corporate procurement agents | **Google UCP** (`/.well-known/ucp`) + **OpenAI ACP / Stripe SPT** | **Planned (Phase 3)** |
 
 ---
 
-## Phase 1 (Today): Option A — Apollo.io Person Enrichment Broker
+## Phase 1 & 1b (Shipped): Option A — Apollo.io Full-Funnel Suite
 
-### Why Apollo Person Enrichment Works as Wedge #1
-1. **High Human Friction:** Standard users must sign up for Apollo and commit to an annual/monthly subscription just to enrich a handful of leads.
-2. **Unit Economics Arbitrage:**
-   - **Your Wholesale Cost:** ~1 Apollo email credit per matched person (`reveal_phone_number: false` enforced to prevent 8-credit mobile charges).
-   - **Agent Retail Price:** `$0.10 USDC` per enriched match via `x402` on Base.
-   - **Zero-Match Protection:** If Apollo finds no match for the requested person, the connector flags `matched: false` so you can avoid charging or issue a retry credit.
+### Product Surface & Catalog Pricing
+1. **People Search (`/api/v1/search/people`, tool: `search_people`)**: `$0.01 / page` (0 credits upstream).
+2. **Organization Search (`/api/v1/search/organizations`, tool: `search_organizations`)**: `$0.02 / page`.
+3. **Person Enrichment (`/api/v1/enrich/person`, tool: `enrich_person`)**: `$0.03 / call` (Free-on-Miss: $0.00 charged if no deliverable email is returned).
+4. **Organization Enrichment (`/api/v1/enrich/organization`, tool: `enrich_organization`)**: `$0.02 / call`.
+5. **Bulk People Enrichment (`/api/v1/enrich/people/bulk`, tool: `bulk_enrich_people`)**: `$0.025 / record` (≤10).
+6. **Bulk Organization Enrichment (`/api/v1/enrich/organizations/bulk`, tool: `bulk_enrich_organizations`)**: `$0.015 / domain` (≤10).
 
 ### The 4-Layer Architecture Implemented Here
-1. **Layer 1 — Supply Connector (`src/verticals/option-a-apollo/connector.ts`):**
-   Connects to `POST https://api.apollo.io/api/v1/people/match` using your master `APOLLO_API_KEY`, enforces credit guardrails (`reveal_phone_number: false`), and normalizes the response.
-2. **Layer 2 — Machine Schema (`src/verticals/option-a-apollo/schema.ts`):**
-   Strict JSON schemas for input identifiers (`first_name`, `last_name`, `domain`, `organization_name`, `linkedin_url`, `email`) and deterministic output (`verified_email`, `title`, `seniority`, `organization`, `employment_history`, `match_confidence`).
-3. **Layer 3 — Zero-Auth Payment Gate (`src/lib/x402-gate.ts`, `src/app/api/mcp/route.ts`, `src/app/api/v1/enrich/person/route.ts`):**
-   Implements both MCP (`paidTool`) and REST HTTP `402 Payment Required` challenges on Base (USDC). Payment acts as the authentication credential.
-4. **Layer 4 — Discovery Registration (`src/app/.well-known/agent.json/route.ts`, `src/app/llms.txt/route.ts`):**
-   Publishes the A2A Agent Card (`/.well-known/agent.json`) and `/llms.txt` so agent directories (x402 Bazaar, Smithery, Official MCP Registry, Glama) and web-crawling agents can index the service automatically.
+1. **Layer 1 — Supply Connectors (`src/verticals/option-a-apollo/*connector.ts`):**
+   Connects to Apollo.io endpoints using `APOLLO_API_KEY`, strictly enforces credit guardrails (`reveal_phone_number: false`), and normalizes responses into clean contracts.
+2. **Layer 2 — Machine Schemas (`src/verticals/option-a-apollo/*schema.ts`):**
+   Strict JSON schemas, pre-payment input validators, and chaining guidance (`next_step`).
+3. **Layer 3 — Zero-Auth Payment Gate (`src/lib/x402-gate.ts`, `src/lib/paid-route.ts`, `src/lib/paid-mcp.ts`):**
+   HTTP `402 Payment Required` challenges on Base USDC (EIP-3009 Path B via CDP Facilitator and PayAI fallback).
+4. **Layer 4 — Multi-Surface Discovery (`catalog.ts`, `agent.json`, `x402`, `openapi.json`, `llms.txt`, `/api/mcp`):**
+   Single source of truth catalog powering 6 discovery surfaces for Smithery, Glama, x402scan, Coinbase Bazaar, and web-crawling LLM agents.

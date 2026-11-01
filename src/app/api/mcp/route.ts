@@ -12,60 +12,63 @@ import {
   getGateConfig,
   resolveGatewayOrigin,
 } from "@/lib/x402-gate";
-
-/**
- * Model Context Protocol (MCP) Streamable HTTP + x402 Paid Tool Handler
- * Endpoint: /api/mcp
- *
- * Exposes two tools to MCP clients (Claude Code, Cursor, Coinbase payments-mcp, x402-mcp):
- * 1. `get_enrichment_quote` (FREE) — Returns live pricing, SLA, and input/output schema.
- * 2. `enrich_person` (PAID: $0.03 USDC via x402, Free-on-Miss) — Resolves partial person identifiers
- *    into a verified B2B profile via Apollo.io.
- */
-
-const MCP_TOOLS = [
-  {
-    name: "get_enrichment_quote",
-    description:
-      "FREE pre-flight discovery tool: Inspect live x402 pricing ($0.03 USDC on Base, Free-on-Miss), deterministic JSON input/output schema, SLA latency telemetry, and recent verifiable Base settlement txHashes for Apollo.io B2B Person Enrichment & Work Email Lookup.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-    },
-  },
-  {
-    name: "enrich_person",
-    description:
-      "PAID ($0.03 USDC via x402 on Base — Free-on-Miss: $0.00 charged if no deliverable email is found): Verified B2B Person Enrichment, Work Email Finder & LinkedIn-to-Email Resolver powered by Apollo.io. Accepts partial identifiers—(1) first_name + last_name + company domain or organization_name, (2) LinkedIn profile URL (linkedin_url), or (3) email (reverse email lookup)—and returns a deterministic JSON profile with deliverable work email, verification status, job title, seniority (founder, C-suite, VP, director), company firmographics (headcount, industry, founded year), and full employment history. Zero signup or API key required.",
-    inputSchema: {
-      ...PERSON_ENRICH_JSON_SCHEMA.input,
-      properties: {
-        ...PERSON_ENRICH_JSON_SCHEMA.input.properties,
-        _x402_payment: {
-          type: "string",
-          description:
-            "Optional x402 signed payment payload (if not passed via HTTP X-PAYMENT header)",
-        },
-      },
-    },
-  },
-];
+import { handlePaidMcpCall } from "@/lib/paid-mcp";
+import {
+  APOLLO_PRODUCTS,
+  getProductById,
+  getProductByMcpTool,
+  getMcpToolsList,
+} from "@/verticals/option-a-apollo/catalog";
+import {
+  validatePeopleSearchInput,
+  validateOrgSearchInput,
+  type PeopleSearchInput,
+  type PeopleSearchOutput,
+  type OrgSearchInput,
+  type OrgSearchOutput,
+} from "@/verticals/option-a-apollo/search-schema";
+import {
+  searchPeopleWithApollo,
+  searchOrganizationsWithApollo,
+} from "@/verticals/option-a-apollo/search-connector";
+import {
+  validateOrgEnrichInput,
+  type OrgEnrichInput,
+  type OrgEnrichOutput,
+} from "@/verticals/option-a-apollo/org-schema";
+import {
+  enrichOrganizationWithApollo,
+  bulkEnrichOrganizationsWithApollo,
+  type BulkOrgEnrichOutput,
+} from "@/verticals/option-a-apollo/org-connector";
+import {
+  validateBulkPersonInput,
+  type BulkPersonInput,
+  type BulkPersonOutput,
+} from "@/verticals/option-a-apollo/bulk-person-schema";
+import { bulkEnrichPeopleWithApollo } from "@/verticals/option-a-apollo/bulk-person-connector";
+import {
+  validateBulkOrgInput,
+  type BulkOrgInput,
+} from "@/verticals/option-a-apollo/bulk-org-schema";
+import { unitPriceUsd, totalPriceUsd } from "@/verticals/option-a-apollo/pricing";
 
 export async function GET(req: NextRequest) {
   const origin = resolveGatewayOrigin(req);
   const cfg = getGateConfig(origin);
+  const mcpTools = getMcpToolsList();
   return NextResponse.json({
     protocol: "mcp-streamable-http",
     serverInfo: {
       name: "enrichmatch-apollo-broker",
-      version: "0.3.0",
+      version: "0.4.0",
     },
     paymentProtocol: "x402",
     x402Version: 2,
     network: cfg.networkCaip2,
     priceUsd: cfg.priceUsd,
     freeOnMiss: true,
-    tools: MCP_TOOLS,
+    tools: mcpTools,
   });
 }
 
@@ -98,8 +101,10 @@ export async function POST(req: NextRequest) {
         },
         serverInfo: {
           name: "enrichmatch-apollo-broker",
-          version: "0.3.0",
+          version: "0.4.0",
         },
+        instructions:
+          "Full-Funnel B2B Data Flow: search_organizations → search_people → enrich_person / bulk_enrich_people; enrich_organization for firmographics.",
       },
     });
   }
@@ -114,7 +119,7 @@ export async function POST(req: NextRequest) {
       jsonrpc: "2.0",
       id,
       result: {
-        tools: MCP_TOOLS,
+        tools: getMcpToolsList(),
       },
     });
   }
@@ -126,6 +131,40 @@ export async function POST(req: NextRequest) {
     const cfg = getGateConfig();
 
     if (toolName === "get_enrichment_quote") {
+      const requestedTool = typeof rawArgs.tool === "string" ? rawArgs.tool.trim() : undefined;
+      if (requestedTool && requestedTool !== "enrich_person") {
+        const product = getProductByMcpTool(requestedTool);
+        if (product) {
+          return NextResponse.json({
+            jsonrpc: "2.0",
+            id,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(
+                    {
+                      tool: product.mcpTool,
+                      path: product.path,
+                      price_usd: product.pricing.unitUsd(),
+                      per: product.pricing.per,
+                      billing_rule: product.pricing.billingRule,
+                      network: cfg.networkCaip2,
+                      asset_contract: cfg.asset,
+                      recipient_wallet: cfg.payTo,
+                      zero_signup: true,
+                      schema: product.inputSchema,
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+            },
+          });
+        }
+      }
+
       return NextResponse.json({
         jsonrpc: "2.0",
         id,
@@ -145,6 +184,15 @@ export async function POST(req: NextRequest) {
                   sla_p95_ms: 850,
                   zero_signup: true,
                   schema: PERSON_ENRICH_JSON_SCHEMA,
+                  catalog: APOLLO_PRODUCTS.map((p) => ({
+                    id: p.id,
+                    tool: p.mcpTool,
+                    path: p.path,
+                    stage: p.funnelStage,
+                    price_usd: p.pricing.unitUsd(),
+                    per: p.pricing.per,
+                    billing_rule: p.pricing.billingRule,
+                  })),
                 },
                 null,
                 2
@@ -155,6 +203,115 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // search_people
+    if (toolName === "search_people") {
+      const prod = getProductById("search_people")!;
+      return handlePaidMcpCall<PeopleSearchInput, PeopleSearchOutput>({
+        req,
+        id,
+        tool: "search_people",
+        description: "MCP Tool Call: search_people (Apollo.io B2B People Search — $0.01 USDC, Free on Miss)",
+        rawArgs,
+        params,
+        validate: validatePeopleSearchInput,
+        expectedSchema: prod.inputSchema,
+        spec: () => ({ priceUsd: unitPriceUsd("search_people"), bazaar: prod.bazaar() }),
+        execute: searchPeopleWithApollo,
+        isBillable: (out) => out.matched && out.people.length > 0,
+        receiptExtras: (out) => ({ results_count: out.people.length }),
+      });
+    }
+
+    // search_organizations
+    if (toolName === "search_organizations") {
+      const prod = getProductById("search_organizations")!;
+      return handlePaidMcpCall<OrgSearchInput, OrgSearchOutput>({
+        req,
+        id,
+        tool: "search_organizations",
+        description: "MCP Tool Call: search_organizations (Apollo.io B2B Organization Search — $0.02 USDC, Free on Miss)",
+        rawArgs,
+        params,
+        validate: validateOrgSearchInput,
+        expectedSchema: prod.inputSchema,
+        spec: () => ({ priceUsd: unitPriceUsd("search_organizations"), bazaar: prod.bazaar() }),
+        execute: searchOrganizationsWithApollo,
+        isBillable: (out) => out.matched && out.organizations.length > 0,
+        receiptExtras: (out) => ({ results_count: out.organizations.length }),
+      });
+    }
+
+    // enrich_organization
+    if (toolName === "enrich_organization") {
+      const prod = getProductById("enrich_organization")!;
+      return handlePaidMcpCall<OrgEnrichInput, OrgEnrichOutput>({
+        req,
+        id,
+        tool: "enrich_organization",
+        description: "MCP Tool Call: enrich_organization (Apollo.io B2B Company Firmographics — $0.02 USDC, Free on Miss)",
+        rawArgs,
+        params,
+        validate: validateOrgEnrichInput,
+        expectedSchema: prod.inputSchema,
+        spec: () => ({ priceUsd: unitPriceUsd("enrich_organization"), bazaar: prod.bazaar() }),
+        execute: enrichOrganizationWithApollo,
+        isBillable: (out) => out.matched && out.organization !== null,
+        receiptExtras: (out) => ({ organization_name: out.organization?.name, primary_domain: out.organization?.primary_domain }),
+      });
+    }
+
+    // bulk_enrich_people
+    if (toolName === "bulk_enrich_people") {
+      const prod = getProductById("bulk_enrich_people")!;
+      return handlePaidMcpCall<BulkPersonInput, BulkPersonOutput>({
+        req,
+        id,
+        tool: "bulk_enrich_people",
+        description: "MCP Tool Call: bulk_enrich_people (Apollo.io B2B Bulk Person Enrichment — $0.025 USDC / record, Free on Miss)",
+        rawArgs,
+        params,
+        validate: validateBulkPersonInput,
+        expectedSchema: prod.inputSchema,
+        spec: (input) => ({
+          priceUsd: totalPriceUsd("bulk_enrich_people", input ? input.details.length : 10),
+          bazaar: prod.bazaar(),
+        }),
+        execute: bulkEnrichPeopleWithApollo,
+        isBillable: (out) => out.billable_count >= 1,
+        receiptExtras: (out) => ({
+          submitted_count: out.submitted_count,
+          matched_count: out.matched_count,
+          billable_count: out.billable_count,
+        }),
+      });
+    }
+
+    // bulk_enrich_organizations
+    if (toolName === "bulk_enrich_organizations") {
+      const prod = getProductById("bulk_enrich_organizations")!;
+      return handlePaidMcpCall<BulkOrgInput, BulkOrgEnrichOutput>({
+        req,
+        id,
+        tool: "bulk_enrich_organizations",
+        description: "MCP Tool Call: bulk_enrich_organizations (Apollo.io B2B Bulk Organization Firmographics — $0.015 USDC / domain, Free on Miss)",
+        rawArgs,
+        params,
+        validate: validateBulkOrgInput,
+        expectedSchema: prod.inputSchema,
+        spec: (input) => ({
+          priceUsd: totalPriceUsd("bulk_enrich_organizations", input ? input.domains.length : 10),
+          bazaar: prod.bazaar(),
+        }),
+        execute: (data) => bulkEnrichOrganizationsWithApollo(data.domains, data.skipped),
+        isBillable: (out) => out.matched_count >= 1,
+        receiptExtras: (out) => ({
+          submitted_count: out.submitted_count,
+          matched_count: out.matched_count,
+        }),
+      });
+    }
+
+    // Legacy enrich_person: untouched handler logic
     if (toolName === "enrich_person") {
       const origin = resolveGatewayOrigin(req);
       const resourceUrl = `${origin}/api/mcp`;

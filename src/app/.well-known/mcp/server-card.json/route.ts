@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { PERSON_ENRICH_JSON_SCHEMA } from "@/verticals/option-a-apollo/schema";
 import { getGateConfig, resolveGatewayOrigin } from "@/lib/x402-gate";
+import { getMcpToolsList } from "@/verticals/option-a-apollo/catalog";
 
 /**
  * Layer 4: MCP Static Server Card Discovery
@@ -15,11 +15,11 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     serverInfo: {
-      name: "apollo-b2b-person-enrichment-x402",
-      title: "Apollo.io B2B Person Enrichment & Verified Email Finder (x402)",
-      version: "0.3.0",
+      name: "apollo-b2b-full-funnel-gateway-x402",
+      title: "Apollo.io Full-Funnel B2B Data Gateway (x402)",
+      version: "0.4.0",
       description:
-        `Zero-signup, pay-per-match B2B Person Enrichment, Work Email Finder & LinkedIn-to-Email Resolver powered by Apollo.io ($${cfg.priceUsd} USDC on Base via x402 v2 — Free-on-Miss).`,
+        "Full-funnel B2B data suite: Company Search, People Search, Person Enrichment & Work Email Lookup, Firmographics & Bulk Operations powered by Apollo.io on Base via x402 v2 (Free-on-Miss).",
       homepage: origin,
     },
     transport: {
@@ -31,26 +31,12 @@ export async function GET(req: NextRequest) {
       x402Version: 2,
       network: cfg.networkCaip2,
       priceUsd: cfg.priceUsd,
+      priceUsdMin: "0.01",
+      priceUsdMax: "0.03",
       freeOnMiss: true,
       currency: "USDC",
       recipientWallet: cfg.payTo,
     },
-    tools: [
-      {
-        name: "get_enrichment_quote",
-        description:
-          `FREE pre-flight discovery tool: Inspect live x402 pricing ($${cfg.priceUsd} USDC on Base, Free-on-Miss), deterministic JSON input/output schema, SLA latency telemetry, and recent verifiable Base settlement txHashes for Apollo.io B2B Person Enrichment & Work Email Lookup.`,
-        inputSchema: {
-          type: "object",
-          properties: {},
-        },
-      },
-      {
-        name: "enrich_person",
-        description:
-          `PAID ($${cfg.priceUsd} USDC via x402 on Base — Free-on-Miss: $0.00 charged if no deliverable email is found): Verified B2B Person Enrichment, Work Email Finder & LinkedIn-to-Email Resolver powered by Apollo.io. Accepts partial identifiers—(1) first_name + last_name + company domain or organization_name, (2) LinkedIn profile URL (linkedin_url), or (3) email (reverse email lookup)—and returns a deterministic JSON profile with deliverable work email, verification status, job title, seniority (founder, C-suite, VP, director), company firmographics (headcount, industry, founded year), and full employment history. Zero signup or API key required.`,
-        inputSchema: PERSON_ENRICH_JSON_SCHEMA.input,
-      },
-    ],
+    tools: getMcpToolsList(),
   });
 }

@@ -264,6 +264,20 @@ function buildMockEnrichment(
   input: PersonEnrichInput,
   startTime: number
 ): PersonEnrichOutput {
+  if (
+    input.domain === "nomatch.invalid" ||
+    input.email?.includes("nomatch.invalid") ||
+    input.first_name === "nomatch.invalid"
+  ) {
+    return {
+      matched: false,
+      timestamp: new Date().toISOString(),
+      latency_ms: Math.max(12, Date.now() - startTime),
+      source: "apollo_mock",
+      person: null,
+    };
+  }
+
   const firstName = input.first_name || (input.name ? input.name.split(" ")[0] : "Tim");
   const lastName =
     input.last_name || (input.name ? input.name.split(" ").slice(1).join(" ") : "Zheng");

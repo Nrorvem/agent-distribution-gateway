@@ -1,8 +1,8 @@
 {
   "$schema": "https://glama.ai/mcp/schemas/server.json",
   "maintainers": ["Nrorvem"],
-  "name": "Apollo.io B2B Person Enrichment & Verified Email Finder (x402)",
-  "description": "Zero-signup, pay-per-match B2B Person Enrichment, Executive Work Email Finder, and LinkedIn-to-Email Resolver powered by Apollo.io ($0.03 USDC on Base via x402 — Free-on-Miss).",
+  "name": "Apollo.io Full-Funnel B2B Data Gateway (x402)",
+  "description": "Zero-signup, pay-per-call full-funnel B2B data suite: Company Search, People Search, Person Enrichment, Organization Firmographics & Bulk Batches powered by Apollo.io on Base via x402 v2 (Free-on-Miss).",
   "endpoints": {
     "streamableHttp": "/api/mcp",
     "a2aAgentCard": "/.well-known/agent.json"

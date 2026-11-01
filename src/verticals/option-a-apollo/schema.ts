@@ -190,7 +190,7 @@ export const KNOWN_COMPANY_BRAND_MAP: Record<
   },
 };
 
-const FREE_EMAIL_PROVIDERS = new Set([
+export const FREE_EMAIL_PROVIDERS = new Set([
   "gmail.com",
   "googlemail.com",
   "yahoo.com",

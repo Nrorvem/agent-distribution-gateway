@@ -1,9 +1,15 @@
 /**
  * Regression Test: Ensures `buildX402Challenge` without a spec remains 100% byte-identical
- * to the original implementation, and validates `usdToAtomicUnits` arithmetic.
+ * to the original implementation, validates `usdToAtomicUnits` arithmetic,
+ * and asserts that every product in the catalog produces a Base64 PAYMENT-REQUIRED header < 7 KB.
  */
 
-import { buildX402Challenge, usdToAtomicUnits } from "../src/lib/x402-gate.ts";
+import {
+  buildX402Challenge,
+  encodePaymentRequiredHeader,
+  usdToAtomicUnits,
+} from "../src/lib/x402-gate.ts";
+import { APOLLO_PRODUCTS } from "../src/verticals/option-a-apollo/catalog.ts";
 
 const EXPECTED_PERSON_CHALLENGE_JSON = JSON.stringify({
   x402Version: 2,
@@ -236,7 +242,28 @@ function runAssertions() {
     throw new Error("Regression detected: buildX402Challenge output changed!");
   }
 
-  console.log("OK: Challenge regression tests passed with 100% byte equivalence.");
+  console.log("Checking catalog product header sizes (< 7 KB limit)...");
+  for (const product of APOLLO_PRODUCTS) {
+    const spec = {
+      priceUsd: product.pricing.unitUsd(),
+      bazaar: product.bazaar(),
+    };
+    const prodChallenge = buildX402Challenge(
+      `https://enrichmatch.dev${product.path}`,
+      product.title,
+      spec
+    );
+    const headerBase64 = encodePaymentRequiredHeader(prodChallenge);
+    const headerSizeBytes = Buffer.byteLength(headerBase64, "utf-8");
+    console.log(`  - [${product.id}] ${product.path}: ${headerSizeBytes} bytes`);
+    if (headerSizeBytes >= 7168) {
+      throw new Error(
+        `PAYMENT-REQUIRED header for ${product.id} exceeds 7 KB: ${headerSizeBytes} bytes`
+      );
+    }
+  }
+
+  console.log("OK: All challenge regression and header size assertions passed!");
 }
 
 runAssertions();

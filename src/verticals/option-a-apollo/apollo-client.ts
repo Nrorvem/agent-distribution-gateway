@@ -13,8 +13,9 @@ const APOLLO_BASE_URL = "https://api.apollo.io";
 
 export function isApolloMockMode(): boolean {
   if (process.env.APOLLO_MOCK_MODE === "true") return true;
+  if (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production") return false;
   const key = process.env.APOLLO_API_KEY;
-  return !key || key === "mock_key" || key === "test_api_key";
+  return !key || key === "mock_key" || key === "test_api_key" || key === "your_apollo_master_api_key_here";
 }
 
 export interface ApolloRequestOptions {

@@ -12,6 +12,8 @@ import {
   recordAuditLog,
   getGateConfig,
   resolveGatewayOrigin,
+  isMockOutputBlockedInProduction,
+  markPaymentAuthorizationConsumed,
 } from "@/lib/x402-gate";
 
 /**
@@ -150,6 +152,19 @@ export async function POST(req: NextRequest) {
     const enrichment = await enrichPersonWithApollo(validation.data);
     const cfg = getGateConfig();
 
+    // Guard against settling mock data in production (Defense-in-Depth B1 / F1)
+    if (isMockOutputBlockedInProduction(enrichment)) {
+      if (paymentVerifyResult.authKey) {
+        markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+      }
+      return NextResponse.json(
+        {
+          error: "Mock data cannot be settled in production.",
+        },
+        { status: 502 }
+      );
+    }
+
     const hasDeliverableEmail = Boolean(
       enrichment.matched &&
         enrichment.person?.email &&
@@ -160,6 +175,9 @@ export async function POST(req: NextRequest) {
     // Free-on-Miss: If Apollo could not resolve a verified match with a deliverable email,
     // skip `/settle` so the buyer agent's EIP-3009 authorization is never settled on-chain ($0.00 charged).
     if (!hasDeliverableEmail) {
+      if (paymentVerifyResult.authKey) {
+        markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+      }
       return NextResponse.json(
         {
           ...enrichment,
@@ -260,6 +278,9 @@ export async function POST(req: NextRequest) {
       }
     );
   } catch (err: any) {
+    if (paymentVerifyResult.authKey) {
+      markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+    }
     return NextResponse.json(
       {
         error: `Upstream supply error: ${err?.message || String(err)}`,

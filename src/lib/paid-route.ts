@@ -24,6 +24,7 @@ import {
   resolveGatewayOrigin,
   usdToAtomicUnits,
   markPaymentAuthorizationConsumed,
+  isMockOutputBlockedInProduction,
   type PaidResourceSpec,
 } from "./x402-gate.ts";
 
@@ -143,11 +144,8 @@ export async function handlePaidPost<TInput, TOutput>(
     );
   }
 
-  // Guard against settling mock data in production (Defense-in-Depth B1)
-  if (
-    (output as any)?.source === "apollo_mock" &&
-    (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production")
-  ) {
+  // Guard against settling mock data in production (Defense-in-Depth B1 / F1)
+  if (isMockOutputBlockedInProduction(output)) {
     if (paymentVerifyResult.authKey) {
       markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
     }

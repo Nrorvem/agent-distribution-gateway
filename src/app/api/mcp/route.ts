@@ -11,6 +11,8 @@ import {
   recordAuditLog,
   getGateConfig,
   resolveGatewayOrigin,
+  isMockOutputBlockedInProduction,
+  markPaymentAuthorizationConsumed,
 } from "@/lib/x402-gate";
 import { handlePaidMcpCall } from "@/lib/paid-mcp";
 import {
@@ -408,7 +410,48 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const enrichment = await enrichPersonWithApollo(validation.data);
+      let enrichment: any;
+      try {
+        enrichment = await enrichPersonWithApollo(validation.data);
+      } catch (err: any) {
+        if (verification.authKey) {
+          markPaymentAuthorizationConsumed(verification.authKey);
+        }
+        return NextResponse.json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `Upstream supply error: ${err?.message || String(err)}`,
+              },
+            ],
+          },
+        });
+      }
+
+      // Guard against settling mock data in production (Defense-in-Depth B1 / F1)
+      if (isMockOutputBlockedInProduction(enrichment)) {
+        if (verification.authKey) {
+          markPaymentAuthorizationConsumed(verification.authKey);
+        }
+        return NextResponse.json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: "Mock data cannot be settled in production.",
+              },
+            ],
+          },
+        });
+      }
+
       const hasDeliverableEmail = Boolean(
         enrichment.matched &&
           enrichment.person?.email &&
@@ -417,6 +460,9 @@ export async function POST(req: NextRequest) {
       );
 
       if (!hasDeliverableEmail) {
+        if (verification.authKey) {
+          markPaymentAuthorizationConsumed(verification.authKey);
+        }
         return NextResponse.json({
           jsonrpc: "2.0",
           id,

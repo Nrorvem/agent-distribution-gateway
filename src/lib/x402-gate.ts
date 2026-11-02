@@ -272,6 +272,22 @@ export function releasePaymentAuthorization(key?: string): void {
   globalState.__x402PaymentAuthorizations.delete(key);
 }
 
+/**
+ * Guard against settling mock data in production (Defense-in-Depth B1 / F1).
+ * Returns true if the output has source: "apollo_mock" and running in production.
+ */
+export function isMockOutputBlockedInProduction(output: unknown): boolean {
+  const isMock = Boolean(
+    output &&
+      typeof output === "object" &&
+      (output as any).source === "apollo_mock"
+  );
+  const isProd =
+    process.env.VERCEL_ENV === "production" ||
+    process.env.NODE_ENV === "production";
+  return isMock && isProd;
+}
+
 function getAuditLogFilePath(): string {
   // On Vercel/AWS Lambda, process.cwd() (/var/task) is read-only; /tmp is writable.
   if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NODE_ENV === "production") {

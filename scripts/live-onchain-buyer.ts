@@ -47,7 +47,22 @@ function loadEnvLocal(): Record<string, string> {
 const args = process.argv.slice(2);
 const urlFlagIdx = args.indexOf("--url");
 const endpointFromArgs = urlFlagIdx !== -1 && args[urlFlagIdx + 1] ? args[urlFlagIdx + 1] : undefined;
-const positionalArgs = args.filter((a, i) => a !== "--url" && (urlFlagIdx === -1 || i !== urlFlagIdx + 1));
+
+const bodyFlagIdx = args.indexOf("--body");
+let bodyFromArgs: Record<string, unknown> | undefined;
+if (bodyFlagIdx !== -1 && args[bodyFlagIdx + 1]) {
+  try {
+    bodyFromArgs = JSON.parse(args[bodyFlagIdx + 1]);
+  } catch (err: any) {
+    console.error("❌ Invalid JSON passed to --body:", err.message);
+    process.exit(1);
+  }
+}
+
+const positionalArgs = args.filter((a, i) =>
+  a !== "--url" && (urlFlagIdx === -1 || i !== urlFlagIdx + 1) &&
+  a !== "--body" && (bodyFlagIdx === -1 || i !== bodyFlagIdx + 1)
+);
 
 const PRODUCTION_ENDPOINT =
   endpointFromArgs ||
@@ -56,7 +71,7 @@ const PRODUCTION_ENDPOINT =
 
 async function main() {
   const localEnv = loadEnvLocal();
-  const payload = {
+  const payload = bodyFromArgs || {
     first_name: positionalArgs[0] || "Fidji",
     last_name: positionalArgs[1] || "Simo",
     domain: positionalArgs[2] || "instacart.com",
@@ -64,7 +79,7 @@ async function main() {
 
   console.log("================================================================================");
   console.log(`🌐 CALLING LIVE PRODUCTION GATEWAY: ${PRODUCTION_ENDPOINT}`);
-  console.log(`👤 Target Profile: ${payload.first_name} ${payload.last_name} @ ${payload.domain}`);
+  console.log(`📦 Request Payload:`, JSON.stringify(payload, null, 2));
   console.log("================================================================================\n");
 
   // 1. Send initial unpaid request to trigger HTTP 402 Payment Required challenge
@@ -202,8 +217,20 @@ async function main() {
       body: JSON.stringify(payload),
     });
 
+    const paymentSettledHeader = paidRes.headers.get("x-payment-settled");
     const paidData = (await paidRes.json()) as Record<string, any>;
-    console.log(`   • Response Status : HTTP ${paidRes.status}\n`);
+    console.log(`   • Response Status    : HTTP ${paidRes.status}`);
+    console.log(`   • X-Payment-Settled  : ${paymentSettledHeader || "absent"}`);
+    if (paidData.receipt?.amount_usd) {
+      console.log(`   • Amount Charged     : $${paidData.receipt.amount_usd} USD`);
+    }
+    if (paidData.receipt?.tx_hash) {
+      console.log(`   • On-Chain Tx Hash   : ${paidData.receipt.tx_hash}`);
+      console.log(`   • BaseScan Link      : https://basescan.org/tx/${paidData.receipt.tx_hash}`);
+    } else if (paidData.receipt?.free_on_miss) {
+      console.log(`   • Free-on-Miss       : true ($0.00 settled on-chain)`);
+    }
+    console.log("\nResponse Body:");
     console.log(JSON.stringify(paidData, null, 2));
 
     if (paidRes.status === 200) {

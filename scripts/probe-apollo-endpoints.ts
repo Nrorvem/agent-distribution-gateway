@@ -255,6 +255,18 @@ async function main() {
     console.log("\n6. Skipping Job Postings probe (no captured org ID).");
   }
 
+  // 7. API Usage Stats
+  console.log("\n7. Probing API Usage Stats (usage_stats/api_usage_stats)...");
+  const usageStatsRes = await probeRequest(
+    apiKey,
+    "POST",
+    "https://api.apollo.io/api/v1/usage_stats/api_usage_stats",
+    {}
+  );
+  results.push(usageStatsRes);
+  console.log(`Status: ${usageStatsRes.status}, Top keys: ${usageStatsRes.topLevelKeys.join(", ")}`);
+  if (usageStatsRes.errorText) console.log(`Error: ${usageStatsRes.errorText}`);
+
   console.log("\n=== Summary of Probe Results ===");
   console.log(JSON.stringify(results, null, 2));
 }

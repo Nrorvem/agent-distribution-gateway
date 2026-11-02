@@ -11,10 +11,13 @@ import type { NormalizedPerson } from "./person-normalizer.ts";
 export interface BulkPersonInput {
   details: PersonEnrichInput[];
   reveal_personal_emails?: boolean;
+  original_indices_map?: number[][];
+  submitted_count?: number;
 }
 
 export interface BulkPersonResultItem {
   index: number;
+  original_indices: number[];
   input_echo: Record<string, unknown>;
   matched: boolean;
   person: NormalizedPerson | null;
@@ -97,11 +100,13 @@ export function validateBulkPersonInput(
     };
   }
 
-  // Deduplicate identical records by a composite identifier signature
-  const seenSignatures = new Set<string>();
+  // Deduplicate identical records by a composite identifier signature while tracking original indices (S3)
+  const sigToDedupedIndex = new Map<string, number>();
   const dedupedDetails: PersonEnrichInput[] = [];
+  const originalIndicesMap: number[][] = [];
 
-  for (const d of validatedDetails) {
+  for (let i = 0; i < validatedDetails.length; i++) {
+    const d = validatedDetails[i];
     const sig = [
       d.id || "",
       d.email || "",
@@ -109,9 +114,14 @@ export function validateBulkPersonInput(
       `${d.first_name || ""}:${d.last_name || ""}:${d.domain || d.organization_name || ""}`,
     ].join("|").toLowerCase();
 
-    if (!seenSignatures.has(sig)) {
-      seenSignatures.add(sig);
+    if (sigToDedupedIndex.has(sig)) {
+      const existingIdx = sigToDedupedIndex.get(sig)!;
+      originalIndicesMap[existingIdx].push(i);
+    } else {
+      const newIdx = dedupedDetails.length;
+      sigToDedupedIndex.set(sig, newIdx);
       dedupedDetails.push(d);
+      originalIndicesMap.push([i]);
     }
   }
 
@@ -120,6 +130,8 @@ export function validateBulkPersonInput(
     data: {
       details: dedupedDetails,
       reveal_personal_emails: Boolean(raw.reveal_personal_emails),
+      original_indices_map: originalIndicesMap,
+      submitted_count: rawList.length,
     },
   };
 }

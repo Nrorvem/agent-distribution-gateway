@@ -86,6 +86,7 @@ export interface PeopleSearchOutput {
     tool: "bulk_enrich_people";
     rest: "POST /api/v1/enrich/people/bulk";
     args: { details: Array<{ id: string }> };
+    remaining_batches: Array<{ details: Array<{ id: string }> }>;
     estimated_price_usd: string;
     description: string;
   };

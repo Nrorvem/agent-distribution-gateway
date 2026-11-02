@@ -137,6 +137,15 @@ const PEOPLE_SEARCH_OUTPUT_SCHEMA: Record<string, unknown> = {
         tool: { type: "string" },
         rest: { type: "string" },
         args: { type: "object" },
+        remaining_batches: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              details: { type: "array" },
+            },
+          },
+        },
         estimated_price_usd: { type: "string" },
         description: { type: "string" },
       },

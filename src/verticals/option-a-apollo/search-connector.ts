@@ -9,6 +9,7 @@
  */
 
 import { apolloRequest, isApolloMockMode } from "./apollo-client.ts";
+import { totalPriceUsd } from "./pricing.ts";
 import type {
   PeopleSearchInput,
   PeopleSearchOutput,
@@ -43,14 +44,16 @@ export function buildMockPeopleSearch(input: PeopleSearchInput): PeopleSearchOut
   const orgName = domain.split(".")[0];
   const capOrg = orgName.charAt(0).toUpperCase() + orgName.slice(1);
   const titles = input.person_titles?.length ? input.person_titles : ["VP of Engineering", "Head of Product", "Chief Technology Officer"];
+  const count = Math.min(Math.max(input.per_page || 10, 1), 25);
+  const firstNames = ["Alex", "Morgan", "Jordan", "Taylor", "Casey", "Riley", "Sam", "Jamie"];
+  const lastNames = ["Chen", "Taylor", "Vance", "Smith", "Johnson", "Williams", "Brown", "Jones"];
 
-  const mockPeople: PersonSearchResultItem[] = titles.slice(0, 3).map((title, idx) => {
+  const mockPeople: PersonSearchResultItem[] = Array.from({ length: count }, (_, idx) => {
     const id = `mock_person_${idx + 1}_${orgName}`;
-    const firstNames = ["Alex", "Morgan", "Jordan"];
-    const lastNames = ["Chen", "Taylor", "Vance"];
-    const firstName = firstNames[idx % 3];
-    const lastName = lastNames[idx % 3];
+    const firstName = firstNames[idx % firstNames.length];
+    const lastName = lastNames[idx % lastNames.length];
     const lastNameObfuscated = `${lastName.slice(0, 1)}***${lastName.slice(-1)}`;
+    const title = titles[idx % titles.length] || "VP of Engineering";
     return {
       apollo_id: id,
       first_name: firstName,
@@ -79,14 +82,24 @@ export function buildMockPeopleSearch(input: PeopleSearchInput): PeopleSearchOut
     };
   });
 
+  const BULK_MAX = 10;
   const emailablePeople = mockPeople.filter((p) => p.has_email && p.apollo_id);
-  const unlock = emailablePeople.length > 0 ? {
-    tool: "bulk_enrich_people" as const,
-    rest: "POST /api/v1/enrich/people/bulk" as const,
-    args: { details: emailablePeople.map((p) => ({ id: p.apollo_id })) },
-    estimated_price_usd: (emailablePeople.length * 0.025).toFixed(3),
-    description: `Batch-enrich all ${emailablePeople.length} reachable profile(s) with deliverable work emails in one call`,
-  } : undefined;
+  let unlock: PeopleSearchOutput["unlock"] = undefined;
+  if (emailablePeople.length > 0) {
+    const ids = emailablePeople.map((p) => ({ id: p.apollo_id }));
+    const chunks = Array.from(
+      { length: Math.ceil(ids.length / BULK_MAX) },
+      (_, i) => ids.slice(i * BULK_MAX, (i + 1) * BULK_MAX)
+    );
+    unlock = {
+      tool: "bulk_enrich_people",
+      rest: "POST /api/v1/enrich/people/bulk",
+      args: { details: chunks[0] },
+      remaining_batches: chunks.slice(1).map((details) => ({ details })),
+      estimated_price_usd: totalPriceUsd("bulk_enrich_people", ids.length),
+      description: `Enrich ${ids.length} reachable profile(s) in ${chunks.length} call(s) of ≤10`,
+    };
+  }
 
   return {
     matched: true,
@@ -250,13 +263,23 @@ export async function searchPeopleWithApollo(
     });
 
     const emailablePeople = people.filter((p) => p.has_email && p.apollo_id);
-    const unlock = emailablePeople.length > 0 ? {
-      tool: "bulk_enrich_people" as const,
-      rest: "POST /api/v1/enrich/people/bulk" as const,
-      args: { details: emailablePeople.map((p) => ({ id: p.apollo_id })) },
-      estimated_price_usd: (emailablePeople.length * 0.025).toFixed(3),
-      description: `Batch-enrich all ${emailablePeople.length} reachable profile(s) with deliverable work emails in one call`,
-    } : undefined;
+    let unlock: PeopleSearchOutput["unlock"] = undefined;
+    if (emailablePeople.length > 0) {
+      const BULK_MAX = 10;
+      const ids = emailablePeople.map((p) => ({ id: p.apollo_id }));
+      const chunks = Array.from(
+        { length: Math.ceil(ids.length / BULK_MAX) },
+        (_, i) => ids.slice(i * BULK_MAX, (i + 1) * BULK_MAX)
+      );
+      unlock = {
+        tool: "bulk_enrich_people",
+        rest: "POST /api/v1/enrich/people/bulk",
+        args: { details: chunks[0] },
+        remaining_batches: chunks.slice(1).map((details) => ({ details })),
+        estimated_price_usd: totalPriceUsd("bulk_enrich_people", ids.length),
+        description: `Enrich ${ids.length} reachable profile(s) in ${chunks.length} call(s) of ≤10`,
+      };
+    }
 
     return {
       matched: people.length > 0,

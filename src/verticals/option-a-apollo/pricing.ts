@@ -34,14 +34,20 @@ export function unitPriceUsd(id: ApolloProductId): string {
   return envVal || d.unitUsd;
 }
 
-/** Multiplies a unit price by a count without floats; returns a decimal USD string with up to 6 dp. */
-export function totalPriceUsd(id: ApolloProductId, count: number): string {
-  const unit = unitPriceUsd(id);
-  const unitAtomic = BigInt(usdToAtomicUnits(unit));
-  const totalAtomic = unitAtomic * BigInt(count);
+export function unitAtomic(id: ApolloProductId): string {
+  return usdToAtomicUnits(unitPriceUsd(id));
+}
+
+export function atomicToUsd(atomic: bigint | string | number): string {
+  const totalAtomic = BigInt(atomic);
   const whole = totalAtomic / 1_000_000n;
   const rem = totalAtomic % 1_000_000n;
   if (rem === 0n) return `${whole}.00`;
   const frac = rem.toString().padStart(6, "0").replace(/0+$/, "");
   return `${whole}.${frac}`;
+}
+
+/** Multiplies a unit price by a count without floats; returns a decimal USD string with up to 6 dp. */
+export function totalPriceUsd(id: ApolloProductId, count: number): string {
+  return atomicToUsd(BigInt(unitAtomic(id)) * BigInt(count));
 }

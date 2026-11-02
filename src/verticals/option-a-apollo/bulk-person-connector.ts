@@ -133,6 +133,12 @@ export async function bulkEnrichPeopleWithApollo(
 
     const rawList = Array.isArray(raw.matches) ? raw.matches : Array.isArray(raw.people) ? raw.people : [];
 
+    if (rawList.length !== input.details.length) {
+      throw new Error(
+        `Apollo bulk_match returned ${rawList.length} rows for ${input.details.length} inputs; refusing to guess alignment`
+      );
+    }
+
     const results: BulkPersonResultItem[] = input.details.map((inputEcho, index) => {
       const rawPerson = rawList[index];
       const originalIndices = input.original_indices_map?.[index] ?? [index];
@@ -179,9 +185,11 @@ export async function bulkEnrichPeopleWithApollo(
       console.warn(`Apollo bulk_match upstream 403/404, falling back to parallel single enrich: ${err?.message}`);
       // Parallel single enrichment (bounded at max 10 records)
       const settled = await Promise.allSettled(input.details.map((d) => enrichPersonWithApollo(d)));
-      const allRejected = settled.every((s) => s.status === "rejected");
-      if (allRejected) {
-        throw new Error(`All parallel single person lookups failed: ${(settled[0] as PromiseRejectedResult).reason?.message}`);
+      const rejected = settled.filter((s) => s.status === "rejected");
+      if (rejected.length > 0) {
+        throw new Error(
+          `${rejected.length}/${settled.length} upstream lookups failed; not settling partial batch`
+        );
       }
 
       const results: BulkPersonResultItem[] = input.details.map((inputEcho, index) => {

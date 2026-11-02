@@ -218,7 +218,7 @@ export async function bulkEnrichOrganizationsWithApollo(
     let results: Array<{ domain: string; matched: boolean; organization: OrganizationDetail | null }>;
 
     if (rawOrgs.length === domains.length) {
-      // Direct index-aligned mapping (verified live)
+      // Direct index-aligned mapping (verified live; see docs/apollo-endpoint-notes.md §4)
       results = domains.map((domain, i) => {
         const rawOrg = rawOrgs[i];
         if (rawOrg && rawOrg.id) {
@@ -281,9 +281,11 @@ export async function bulkEnrichOrganizationsWithApollo(
       // Fall back to bounded parallel single enrichment on scope regression
       console.warn(`Bulk org upstream 403/404, executing parallel single queries: ${err?.message}`);
       const settled = await Promise.allSettled(domains.map((domain) => enrichOrganizationWithApollo({ domain })));
-      const allRejected = settled.every((s) => s.status === "rejected");
-      if (allRejected) {
-        throw new Error(`All parallel single organization lookups failed: ${(settled[0] as PromiseRejectedResult).reason?.message}`);
+      const rejected = settled.filter((s) => s.status === "rejected");
+      if (rejected.length > 0) {
+        throw new Error(
+          `${rejected.length}/${settled.length} upstream lookups failed; not settling partial batch`
+        );
       }
 
       const results = domains.map((domain, i) => {

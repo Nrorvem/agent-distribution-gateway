@@ -23,6 +23,7 @@ import {
   getGateConfig,
   resolveGatewayOrigin,
   usdToAtomicUnits,
+  markPaymentAuthorizationConsumed,
   type PaidResourceSpec,
 } from "./x402-gate.ts";
 
@@ -131,9 +132,28 @@ export async function handlePaidPost<TInput, TOutput>(
   try {
     output = await o.execute(validation.data);
   } catch (err: any) {
+    if (paymentVerifyResult.authKey) {
+      markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+    }
     return NextResponse.json(
       {
         error: `Upstream supply error: ${err?.message || String(err)}`,
+      },
+      { status: 502 }
+    );
+  }
+
+  // Guard against settling mock data in production (Defense-in-Depth B1)
+  if (
+    (output as any)?.source === "apollo_mock" &&
+    (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production")
+  ) {
+    if (paymentVerifyResult.authKey) {
+      markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+    }
+    return NextResponse.json(
+      {
+        error: "Mock data cannot be settled in production.",
       },
       { status: 502 }
     );
@@ -145,6 +165,9 @@ export async function handlePaidPost<TInput, TOutput>(
 
   // Free-on-Miss: If not billable, skip settlement ($0.00 charged)
   if (!billable) {
+    if (paymentVerifyResult.authKey) {
+      markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+    }
     return NextResponse.json(
       {
         ...(typeof output === "object" && output !== null ? output : { result: output }),

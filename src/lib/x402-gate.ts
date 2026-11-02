@@ -185,6 +185,7 @@ const globalState = globalThis as unknown as {
   __x402AuditLogs?: AuditLogEntry[];
   __x402RedeemedTxHashes?: Set<string>;
   __x402InFlightTxHashes?: Set<string>;
+  __x402PaymentAuthorizations?: Map<string, { status: "in_flight" | "consumed"; validBefore?: number }>;
 };
 
 if (!globalState.__x402RedeemedTxHashes) {
@@ -192,6 +193,83 @@ if (!globalState.__x402RedeemedTxHashes) {
 }
 if (!globalState.__x402InFlightTxHashes) {
   globalState.__x402InFlightTxHashes = new Set<string>();
+}
+if (!globalState.__x402PaymentAuthorizations) {
+  globalState.__x402PaymentAuthorizations = new Map();
+}
+
+/**
+ * Checks whether an EIP-3009 payment authorization has already been used or is currently in flight.
+ * Purges expired authorizations whose validBefore timestamp has passed.
+ */
+export function checkPaymentAuthorizationLock(
+  from: string,
+  nonce: string
+): { allowed: boolean; error?: string; key: string } {
+  const key = `${from.toLowerCase()}:${nonce.toLowerCase()}`;
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  if (!globalState.__x402PaymentAuthorizations) {
+    globalState.__x402PaymentAuthorizations = new Map();
+  }
+
+  // Purge expired entries
+  for (const [k, v] of globalState.__x402PaymentAuthorizations.entries()) {
+    if (v.validBefore && v.validBefore < nowSec) {
+      globalState.__x402PaymentAuthorizations.delete(k);
+    }
+  }
+
+  const existing = globalState.__x402PaymentAuthorizations.get(key);
+  if (existing) {
+    return {
+      allowed: false,
+      error: "Payment authorization already used",
+      key,
+    };
+  }
+
+  return { allowed: true, key };
+}
+
+/**
+ * Locks an EIP-3009 payment authorization as in_flight.
+ */
+export function lockPaymentAuthorization(
+  from: string,
+  nonce: string,
+  validBefore?: number
+): { allowed: boolean; error?: string; key: string } {
+  const check = checkPaymentAuthorizationLock(from, nonce);
+  if (!check.allowed) return check;
+
+  globalState.__x402PaymentAuthorizations!.set(check.key, {
+    status: "in_flight",
+    validBefore,
+  });
+
+  return { allowed: true, key: check.key };
+}
+
+/**
+ * Marks an in-flight authorization as permanently consumed (e.g. after settlement or miss).
+ */
+export function markPaymentAuthorizationConsumed(key?: string): void {
+  if (!key || !globalState.__x402PaymentAuthorizations) return;
+  const existing = globalState.__x402PaymentAuthorizations.get(key);
+  if (existing) {
+    existing.status = "consumed";
+  } else {
+    globalState.__x402PaymentAuthorizations.set(key, { status: "consumed" });
+  }
+}
+
+/**
+ * Releases a payment authorization lock if verification failed before execution.
+ */
+export function releasePaymentAuthorization(key?: string): void {
+  if (!key || !globalState.__x402PaymentAuthorizations) return;
+  globalState.__x402PaymentAuthorizations.delete(key);
 }
 
 function getAuditLogFilePath(): string {
@@ -856,6 +934,7 @@ export interface X402PendingSettlementContext {
   activeFacilitatorUrl: string;
   facilitatorRequestBody: Record<string, any>;
   payer?: string;
+  authKey?: string;
 }
 
 /**
@@ -881,6 +960,7 @@ export async function verifyX402Payment(
   facilitator?: string;
   txHash?: string;
   error?: string;
+  authKey?: string;
   settlementContext?: X402PendingSettlementContext;
 }> {
   if (!paymentHeader || !paymentHeader.trim()) {
@@ -1085,10 +1165,29 @@ export async function verifyX402Payment(
       paymentPayload?.payload?.authorization?.from ||
       "0xVerifiedAgentWallet";
 
+    const authFrom = paymentPayload?.payload?.authorization?.from;
+    const authNonce = paymentPayload?.payload?.authorization?.nonce;
+    const authValidBefore = paymentPayload?.payload?.authorization?.validBefore
+      ? Number(paymentPayload.payload.authorization.validBefore)
+      : undefined;
+
+    let authKey: string | undefined;
+    if (authFrom && authNonce) {
+      const lockRes = lockPaymentAuthorization(authFrom, authNonce, authValidBefore);
+      if (!lockRes.allowed) {
+        return {
+          verified: false,
+          error: "Payment authorization already used",
+        };
+      }
+      authKey = lockRes.key;
+    }
+
     const settlementContext: X402PendingSettlementContext = {
       activeFacilitatorUrl,
       facilitatorRequestBody,
       payer: verifiedPayer,
+      authKey,
     };
 
     // If running in 2-Phase "Free-on-Miss" mode, return verified status now without settling on-chain yet.
@@ -1099,6 +1198,7 @@ export async function verifyX402Payment(
         payer: verifiedPayer,
         mode: "facilitator_onchain",
         facilitator: activeFacilitatorUrl,
+        authKey,
         settlementContext,
       };
     }
@@ -1198,6 +1298,7 @@ export async function settleVerifiedX402Payment(
     };
 
     if (settleJson.success === false) {
+      if (context.authKey) markPaymentAuthorizationConsumed(context.authKey);
       return {
         verified: false,
         settled: false,
@@ -1213,6 +1314,7 @@ export async function settleVerifiedX402Payment(
     const settledTxHash =
       settleJson.transaction || settleJson.txHash || settleJson.tx_hash;
     if (!settledTxHash) {
+      if (context.authKey) markPaymentAuthorizationConsumed(context.authKey);
       return {
         verified: false,
         settled: false,
@@ -1223,6 +1325,7 @@ export async function settleVerifiedX402Payment(
     }
 
     globalState.__x402RedeemedTxHashes!.add(settledTxHash.toLowerCase());
+    if (context.authKey) markPaymentAuthorizationConsumed(context.authKey);
 
     return {
       verified: true,
@@ -1233,6 +1336,7 @@ export async function settleVerifiedX402Payment(
       txHash: settledTxHash,
     };
   } catch (err: any) {
+    if (context.authKey) markPaymentAuthorizationConsumed(context.authKey);
     return {
       verified: false,
       settled: false,

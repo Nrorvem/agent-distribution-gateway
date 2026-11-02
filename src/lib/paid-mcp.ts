@@ -13,6 +13,7 @@ import {
   recordAuditLog,
   getGateConfig,
   resolveGatewayOrigin,
+  markPaymentAuthorizationConsumed,
   type PaidResourceSpec,
 } from "./x402-gate.ts";
 
@@ -134,6 +135,9 @@ export async function handlePaidMcpCall<TInput, TOutput>(
   try {
     output = await o.execute(validation.data);
   } catch (err: any) {
+    if (verification.authKey) {
+      markPaymentAuthorizationConsumed(verification.authKey);
+    }
     return NextResponse.json({
       jsonrpc: "2.0",
       id: o.id,
@@ -149,12 +153,38 @@ export async function handlePaidMcpCall<TInput, TOutput>(
     });
   }
 
+  // Guard against settling mock data in production (Defense-in-Depth B1)
+  if (
+    (output as any)?.source === "apollo_mock" &&
+    (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production")
+  ) {
+    if (verification.authKey) {
+      markPaymentAuthorizationConsumed(verification.authKey);
+    }
+    return NextResponse.json({
+      jsonrpc: "2.0",
+      id: o.id,
+      result: {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: "Mock data cannot be settled in production.",
+          },
+        ],
+      },
+    });
+  }
+
   const cfg = getGateConfig();
   const billable = o.isBillable(output);
   const extras = o.receiptExtras ? o.receiptExtras(output) : {};
 
   // 5. Free-on-Miss
   if (!billable) {
+    if (verification.authKey) {
+      markPaymentAuthorizationConsumed(verification.authKey);
+    }
     return NextResponse.json({
       jsonrpc: "2.0",
       id: o.id,

@@ -24,9 +24,11 @@ export function buildMockBulkPerson(input: BulkPersonInput): BulkPersonOutput {
       d.email?.includes("nomatch.invalid") ||
       d.first_name === "nomatch.invalid";
 
+    const originalIndices = input.original_indices_map?.[index] ?? [index];
     if (isMiss) {
       return {
         index,
+        original_indices: originalIndices,
         input_echo: d as Record<string, unknown>,
         matched: false,
         person: null,
@@ -41,6 +43,7 @@ export function buildMockBulkPerson(input: BulkPersonInput): BulkPersonOutput {
 
     return {
       index,
+      original_indices: originalIndices,
       input_echo: d as Record<string, unknown>,
       matched: true,
       person: {
@@ -99,7 +102,7 @@ export function buildMockBulkPerson(input: BulkPersonInput): BulkPersonOutput {
     source: "apollo_mock",
     timestamp: new Date().toISOString(),
     latency_ms: Date.now() - start + 25,
-    submitted_count: input.details.length,
+    submitted_count: input.submitted_count ?? input.details.length,
     matched_count: matchedCount,
     billable_count: billableCount,
     results,
@@ -132,10 +135,12 @@ export async function bulkEnrichPeopleWithApollo(
 
     const results: BulkPersonResultItem[] = input.details.map((inputEcho, index) => {
       const rawPerson = rawList[index];
+      const originalIndices = input.original_indices_map?.[index] ?? [index];
       if (rawPerson && rawPerson.id) {
         const person = normalizeApolloPerson(rawPerson);
         return {
           index,
+          original_indices: originalIndices,
           input_echo: inputEcho as Record<string, unknown>,
           matched: true,
           person,
@@ -143,6 +148,7 @@ export async function bulkEnrichPeopleWithApollo(
       }
       return {
         index,
+        original_indices: originalIndices,
         input_echo: inputEcho as Record<string, unknown>,
         matched: false,
         person: null,
@@ -163,45 +169,63 @@ export async function bulkEnrichPeopleWithApollo(
       source: "apollo_live",
       timestamp: new Date().toISOString(),
       latency_ms: Date.now() - start,
-      submitted_count: input.details.length,
+      submitted_count: input.submitted_count ?? input.details.length,
       matched_count: matchedCount,
       billable_count: billableCount,
       results,
     };
   } catch (err: any) {
-    console.warn(`Apollo bulk_match upstream unavailable/403, falling back to parallel single enrich: ${err?.message}`);
-    // Parallel single enrichment (bounded at max 10 records)
-    const promises = input.details.map((d) => enrichPersonWithApollo(d));
-    const settled = await Promise.all(promises);
+    if (/HTTP 403|HTTP 404/.test(err?.message ?? "")) {
+      console.warn(`Apollo bulk_match upstream 403/404, falling back to parallel single enrich: ${err?.message}`);
+      // Parallel single enrichment (bounded at max 10 records)
+      const settled = await Promise.allSettled(input.details.map((d) => enrichPersonWithApollo(d)));
+      const allRejected = settled.every((s) => s.status === "rejected");
+      if (allRejected) {
+        throw new Error(`All parallel single person lookups failed: ${(settled[0] as PromiseRejectedResult).reason?.message}`);
+      }
 
-    const results: BulkPersonResultItem[] = input.details.map((inputEcho, index) => {
-      const single = settled[index];
+      const results: BulkPersonResultItem[] = input.details.map((inputEcho, index) => {
+        const item = settled[index];
+        const originalIndices = input.original_indices_map?.[index] ?? [index];
+        if (item.status === "fulfilled") {
+          return {
+            index,
+            original_indices: originalIndices,
+            input_echo: inputEcho as Record<string, unknown>,
+            matched: item.value.matched,
+            person: item.value.person,
+          };
+        }
+        return {
+          index,
+          original_indices: originalIndices,
+          input_echo: inputEcho as Record<string, unknown>,
+          matched: false,
+          person: null,
+        };
+      });
+
+      const matchedCount = results.filter((r) => r.matched).length;
+      const billableCount = results.filter(
+        (r) =>
+          r.matched &&
+          r.person?.email &&
+          r.person.email.trim().length > 0 &&
+          r.person.email_status !== "unavailable"
+      ).length;
+
       return {
-        index,
-        input_echo: inputEcho as Record<string, unknown>,
-        matched: single.matched,
-        person: single.person,
+        matched: billableCount >= 1,
+        source: "apollo_live",
+        timestamp: new Date().toISOString(),
+        latency_ms: Date.now() - start,
+        submitted_count: input.submitted_count ?? input.details.length,
+        matched_count: matchedCount,
+        billable_count: billableCount,
+        results,
       };
-    });
-
-    const matchedCount = results.filter((r) => r.matched).length;
-    const billableCount = results.filter(
-      (r) =>
-        r.matched &&
-        r.person?.email &&
-        r.person.email.trim().length > 0 &&
-        r.person.email_status !== "unavailable"
-    ).length;
-
-    return {
-      matched: billableCount >= 1,
-      source: "apollo_live",
-      timestamp: new Date().toISOString(),
-      latency_ms: Date.now() - start,
-      submitted_count: input.details.length,
-      matched_count: matchedCount,
-      billable_count: billableCount,
-      results,
-    };
+    }
+    // On 429, 5xx, or network timeout, re-throw so the endpoint returns 502 with no settlement
+    throw err;
   }
 }

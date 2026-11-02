@@ -50,10 +50,12 @@ export function buildMockPeopleSearch(input: PeopleSearchInput): PeopleSearchOut
     const lastNames = ["Chen", "Taylor", "Vance"];
     const firstName = firstNames[idx % 3];
     const lastName = lastNames[idx % 3];
+    const lastNameObfuscated = `${lastName.slice(0, 1)}***${lastName.slice(-1)}`;
     return {
       apollo_id: id,
       first_name: firstName,
       last_name: lastName,
+      last_name_obfuscated: lastNameObfuscated,
       full_name: `${firstName} ${lastName}`,
       title,
       seniority: "vp",
@@ -77,6 +79,15 @@ export function buildMockPeopleSearch(input: PeopleSearchInput): PeopleSearchOut
     };
   });
 
+  const emailablePeople = mockPeople.filter((p) => p.has_email && p.apollo_id);
+  const unlock = emailablePeople.length > 0 ? {
+    tool: "bulk_enrich_people" as const,
+    rest: "POST /api/v1/enrich/people/bulk" as const,
+    args: { details: emailablePeople.map((p) => ({ id: p.apollo_id })) },
+    estimated_price_usd: (emailablePeople.length * 0.025).toFixed(3),
+    description: `Batch-enrich all ${emailablePeople.length} reachable profile(s) with deliverable work emails in one call`,
+  } : undefined;
+
   return {
     matched: true,
     source: "apollo_mock",
@@ -89,6 +100,7 @@ export function buildMockPeopleSearch(input: PeopleSearchInput): PeopleSearchOut
       total_pages: 1,
     },
     people: mockPeople,
+    unlock,
   };
 }
 
@@ -205,13 +217,15 @@ export async function searchPeopleWithApollo(
     const people: PersonSearchResultItem[] = rawPeople.map((p) => {
       const apolloId = String(p.id || p.apollo_id || "");
       const firstName = String(p.first_name || "");
-      const lastName = p.last_name || p.last_name_obfuscated || null;
-      const fullName = p.name || (firstName ? `${firstName} ${lastName || ""}`.trim() : null);
+      const lastName = p.last_name ?? null;
+      const lastNameObfuscated = p.last_name_obfuscated ?? null;
+      const fullName = p.name || (lastName ? `${firstName} ${lastName}`.trim() : (firstName || null));
 
       return {
         apollo_id: apolloId,
         first_name: firstName,
         last_name: lastName,
+        last_name_obfuscated: lastNameObfuscated,
         full_name: fullName,
         title: String(p.title || ""),
         seniority: p.seniority || null,
@@ -223,8 +237,8 @@ export async function searchPeopleWithApollo(
           country: p.country || null,
         },
         organization: {
-          id: p.organization?.id || p.organization_id || "",
-          name: p.organization?.name || "",
+          id: p.organization?.id || p.organization_id || null,
+          name: p.organization?.name || null,
           primary_domain: p.organization?.primary_domain || null,
         },
         next_step: {
@@ -234,6 +248,15 @@ export async function searchPeopleWithApollo(
         },
       };
     });
+
+    const emailablePeople = people.filter((p) => p.has_email && p.apollo_id);
+    const unlock = emailablePeople.length > 0 ? {
+      tool: "bulk_enrich_people" as const,
+      rest: "POST /api/v1/enrich/people/bulk" as const,
+      args: { details: emailablePeople.map((p) => ({ id: p.apollo_id })) },
+      estimated_price_usd: (emailablePeople.length * 0.025).toFixed(3),
+      description: `Batch-enrich all ${emailablePeople.length} reachable profile(s) with deliverable work emails in one call`,
+    } : undefined;
 
     return {
       matched: people.length > 0,
@@ -247,11 +270,25 @@ export async function searchPeopleWithApollo(
         total_pages: totalPages,
       },
       people,
+      unlock,
     };
   } catch (err: any) {
-    // Graceful fallback to mock if live API is temporarily restricted or down
-    console.warn(`Apollo live people search error, falling back to mock: ${err?.message}`);
-    return buildMockPeopleSearch(input);
+    if (/HTTP 404/.test(err?.message ?? "")) {
+      return {
+        matched: false,
+        source: "apollo_live",
+        timestamp: new Date().toISOString(),
+        latency_ms: Date.now() - start,
+        pagination: {
+          page: input.page || 1,
+          per_page: input.per_page || 10,
+          total_entries: 0,
+          total_pages: 0,
+        },
+        people: [],
+      };
+    }
+    throw err;
   }
 }
 
@@ -290,7 +327,6 @@ export async function searchOrganizationsWithApollo(
   }
 
   try {
-    // TODO(verify-live): mixed_companies/search requires elevated tier scope
     const raw = await apolloRequest<{
       total_entries?: number;
       pagination?: { total_entries?: number; total_pages?: number };
@@ -351,8 +387,21 @@ export async function searchOrganizationsWithApollo(
       organizations,
     };
   } catch (err: any) {
-    // 403 API_INACCESSIBLE or network error: return mock search with TODO(verify-live)
-    console.warn(`Apollo live org search fallback to mock: ${err?.message}`);
-    return buildMockOrgSearch(input);
+    if (/HTTP 404/.test(err?.message ?? "")) {
+      return {
+        matched: false,
+        source: "apollo_live",
+        timestamp: new Date().toISOString(),
+        latency_ms: Date.now() - start,
+        pagination: {
+          page: input.page || 1,
+          per_page: input.per_page || 10,
+          total_entries: 0,
+          total_pages: 0,
+        },
+        organizations: [],
+      };
+    }
+    throw err;
   }
 }

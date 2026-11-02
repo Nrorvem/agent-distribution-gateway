@@ -161,8 +161,8 @@ export async function enrichOrganizationWithApollo(
     };
   } catch (err: any) {
     console.warn(`Apollo live org enrich error: ${err?.message}`);
-    // If not found (404/empty) or rate limited, return clean miss
-    if (err?.message?.includes("404")) {
+    // If not found (404), return clean miss
+    if (/HTTP 404/.test(err?.message ?? "")) {
       return {
         matched: false,
         source: "apollo_live",
@@ -171,8 +171,8 @@ export async function enrichOrganizationWithApollo(
         organization: null,
       };
     }
-    // Network fallback
-    return buildMockOrgEnrich(domain, input.organization_name);
+    // Network or rate limit error -> re-throw to trigger 502 with no settlement
+    throw err;
   }
 }
 
@@ -215,22 +215,55 @@ export async function bulkEnrichOrganizationsWithApollo(
     }>("POST", "/api/v1/organizations/bulk_enrich", { body: { domains } });
 
     const rawOrgs = Array.isArray(raw.organizations) ? raw.organizations : [];
-    const orgMap = new Map<string, OrganizationDetail>();
-    for (const org of rawOrgs) {
-      const normalized = normalizeApolloOrganization(org);
-      if (normalized.primary_domain) {
-        orgMap.set(normalized.primary_domain.toLowerCase(), normalized);
-      }
-    }
+    let results: Array<{ domain: string; matched: boolean; organization: OrganizationDetail | null }>;
 
-    const results = domains.map((domain) => {
-      const hit = orgMap.get(domain.toLowerCase()) || null;
-      return {
-        domain,
-        matched: Boolean(hit),
-        organization: hit,
-      };
-    });
+    if (rawOrgs.length === domains.length) {
+      // Direct index-aligned mapping (verified live)
+      results = domains.map((domain, i) => {
+        const rawOrg = rawOrgs[i];
+        if (rawOrg && rawOrg.id) {
+          const normalized = normalizeApolloOrganization(rawOrg);
+          return {
+            domain,
+            matched: true,
+            organization: normalized,
+          };
+        }
+        return {
+          domain,
+          matched: false,
+          organization: null,
+        };
+      });
+    } else {
+      // Fallback matching: by primary_domain or website_url host (handles domain redirects, e.g. fb.com -> meta.com)
+      const orgMap = new Map<string, OrganizationDetail>();
+      for (const org of rawOrgs) {
+        if (!org) continue;
+        const normalized = normalizeApolloOrganization(org);
+        if (normalized.primary_domain) {
+          orgMap.set(normalized.primary_domain.toLowerCase(), normalized);
+        }
+        if (normalized.website_url) {
+          try {
+            const host = new URL(normalized.website_url).hostname.replace(/^www\./, "").toLowerCase();
+            if (!orgMap.has(host)) orgMap.set(host, normalized);
+          } catch {
+            // ignore url parse error
+          }
+        }
+      }
+
+      results = domains.map((domain) => {
+        const cleanDom = domain.toLowerCase().replace(/^www\./, "");
+        const hit = orgMap.get(cleanDom) || null;
+        return {
+          domain,
+          matched: Boolean(hit),
+          organization: hit,
+        };
+      });
+    }
 
     const matchedCount = results.filter((r) => r.matched).length;
     return {
@@ -244,27 +277,44 @@ export async function bulkEnrichOrganizationsWithApollo(
       results,
     };
   } catch (err: any) {
-    // Fall back to bounded parallel single enrichment
-    console.warn(`Bulk org upstream 403/unavailable, executing parallel single queries: ${err?.message}`);
-    const promises = domains.map((domain) => enrichOrganizationWithApollo({ domain }));
-    const settled = await Promise.all(promises);
+    if (/HTTP 403|HTTP 404/.test(err?.message ?? "")) {
+      // Fall back to bounded parallel single enrichment on scope regression
+      console.warn(`Bulk org upstream 403/404, executing parallel single queries: ${err?.message}`);
+      const settled = await Promise.allSettled(domains.map((domain) => enrichOrganizationWithApollo({ domain })));
+      const allRejected = settled.every((s) => s.status === "rejected");
+      if (allRejected) {
+        throw new Error(`All parallel single organization lookups failed: ${(settled[0] as PromiseRejectedResult).reason?.message}`);
+      }
 
-    const results = domains.map((domain, i) => ({
-      domain,
-      matched: settled[i].matched,
-      organization: settled[i].organization,
-    }));
+      const results = domains.map((domain, i) => {
+        const item = settled[i];
+        if (item.status === "fulfilled") {
+          return {
+            domain,
+            matched: item.value.matched,
+            organization: item.value.organization,
+          };
+        }
+        return {
+          domain,
+          matched: false,
+          organization: null,
+        };
+      });
 
-    const matchedCount = results.filter((r) => r.matched).length;
-    return {
-      matched: matchedCount > 0,
-      source: "apollo_live",
-      timestamp: new Date().toISOString(),
-      latency_ms: Date.now() - start,
-      submitted_count: domains.length,
-      matched_count: matchedCount,
-      skipped: skippedFreeMail,
-      results,
-    };
+      const matchedCount = results.filter((r) => r.matched).length;
+      return {
+        matched: matchedCount > 0,
+        source: "apollo_live",
+        timestamp: new Date().toISOString(),
+        latency_ms: Date.now() - start,
+        submitted_count: domains.length,
+        matched_count: matchedCount,
+        skipped: skippedFreeMail,
+        results,
+      };
+    }
+    // On 429, 5xx, or network timeout, re-throw so the endpoint returns 502 without settling
+    throw err;
   }
 }

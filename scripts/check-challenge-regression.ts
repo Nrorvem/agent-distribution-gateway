@@ -243,23 +243,30 @@ function runAssertions() {
   }
 
   console.log("Checking catalog product header sizes (< 7 KB limit)...");
-  for (const product of APOLLO_PRODUCTS) {
-    const spec = {
-      priceUsd: product.pricing.unitUsd(),
-      bazaar: product.bazaar(),
-    };
-    const prodChallenge = buildX402Challenge(
-      `https://enrichmatch.dev${product.path}`,
-      product.title,
-      spec
-    );
-    const headerBase64 = encodePaymentRequiredHeader(prodChallenge);
-    const headerSizeBytes = Buffer.byteLength(headerBase64, "utf-8");
-    console.log(`  - [${product.id}] ${product.path}: ${headerSizeBytes} bytes`);
-    if (headerSizeBytes >= 7168) {
-      throw new Error(
-        `PAYMENT-REQUIRED header for ${product.id} exceeds 7 KB: ${headerSizeBytes} bytes`
+  const testOrigins = [
+    "https://enrichmatch.dev",
+    "https://agent-distribution-gateway.vercel.app",
+  ];
+  for (const origin of testOrigins) {
+    console.log(`  Origin: ${origin}`);
+    for (const product of APOLLO_PRODUCTS) {
+      const spec = {
+        priceUsd: product.pricing.unitUsd(),
+        bazaar: product.bazaar(),
+      };
+      const prodChallenge = buildX402Challenge(
+        `${origin}${product.path}`,
+        product.title,
+        spec
       );
+      const headerBase64 = encodePaymentRequiredHeader(prodChallenge);
+      const headerSizeBytes = Buffer.byteLength(headerBase64, "utf-8");
+      console.log(`    - [${product.id}] ${product.path}: ${headerSizeBytes} bytes`);
+      if (headerSizeBytes >= 7168) {
+        throw new Error(
+          `PAYMENT-REQUIRED header for ${product.id} at ${origin} exceeds 7 KB: ${headerSizeBytes} bytes`
+        );
+      }
     }
   }
 

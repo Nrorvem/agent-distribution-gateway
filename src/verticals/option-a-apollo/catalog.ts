@@ -255,6 +255,23 @@ const ORG_ENRICH_OUTPUT_SCHEMA: Record<string, unknown> = {
 };
 
 // 4. Bulk People Enrich Schemas & Examples
+const BULK_PERSON_ITEM_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: true,
+  description: "Person identifiers: linkedin_url, email, id, or name + domain/organization_name.",
+  properties: {
+    first_name: { type: "string" },
+    last_name: { type: "string" },
+    name: { type: "string" },
+    domain: { type: "string" },
+    organization_name: { type: "string" },
+    company: { type: "string" },
+    email: { type: "string" },
+    linkedin_url: { type: "string" },
+    id: { type: "string" },
+  },
+};
+
 const BULK_PERSON_ENRICH_INPUT_SCHEMA: Record<string, unknown> = {
   type: "object",
   required: ["details"],
@@ -264,7 +281,7 @@ const BULK_PERSON_ENRICH_INPUT_SCHEMA: Record<string, unknown> = {
       type: "array",
       minItems: 1,
       maxItems: 10,
-      items: PERSON_ENRICH_JSON_SCHEMA.input,
+      items: BULK_PERSON_ITEM_SCHEMA,
       description: "Array of 1 to 10 person identifier objects.",
     },
     reveal_personal_emails: { type: "boolean", default: false },

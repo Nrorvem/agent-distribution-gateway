@@ -141,3 +141,31 @@ This document records the empirical probe results and official schema notes for 
 | 5 | Bulk Person Enrich | `/api/v1/enrich/people/bulk` | `POST /api/v1/people/bulk_match` | **Verified 200 OK** | Direct live upstream + parallel fallback |
 | 6 | Bulk Org Enrich | `/api/v1/enrich/organizations/bulk` | `POST /api/v1/organizations/bulk_enrich` | **Verified 200 OK** | Direct live upstream + parallel fallback |
 | 7 | Health Check | `/api/v1/health` | `POST /api/v1/usage_stats/api_usage_stats` | **Verified 200 OK** | Cached health monitoring |
+
+---
+
+## 7. Credit Economics & Margin Analysis
+
+The gateway operates on a strictly positive unit economics model across all funnel stages, protected by Free-on-Miss refund semantics and upstream credit guardrails (`reveal_phone_number: false` strictly enforced).
+
+### Per-Endpoint Unit Economics Table
+
+| Product ID | REST Route | Gateway Price (USDC) | Billing Rule | Apollo Credits / Call or Match | Upstream Cost @ $0.01/credit | Gross Margin % |
+|---|---|---|---|---|---|---|
+| `search_people` | `/api/v1/search/people` | **$0.01** / page | Free on Miss (`has_email: true` ≥ 1) | **0 credits** | $0.000 | **100.0%** |
+| `search_organizations` | `/api/v1/search/organizations` | **$0.02** / page | Free on Miss (≥ 1 company) | **0 credits** | $0.000 | **100.0%** |
+| `enrich_person` | `/api/v1/enrich/person` | **$0.03** / match | Free on Miss (email deliverable) | **1 email credit** (0 on miss) | $0.010 | **66.7%** |
+| `enrich_organization` | `/api/v1/enrich/organization` | **$0.02** / domain | Free on Miss (≥ 1 org matched) | **0–1 credit** (plan-dependent) | $0.000–$0.010 | **50.0% – 100.0%** |
+| `bulk_enrich_people` | `/api/v1/enrich/people/bulk` | **$0.025** / record | Free on Miss (≥ 1 billable) | **1 credit** per matched record | $0.010 / match | **60.0%** (on hit) |
+| `bulk_enrich_organizations` | `/api/v1/enrich/organizations/bulk` | **$0.015** / domain | Free on Miss (≥ 1 matched) | **0–1 credit** per domain | $0.000–$0.010 | **33.3% – 100.0%** |
+
+### Key Economic Invariants & Guardrails
+
+1. **Zero-Credit Discovery Funnel:**
+   `search_people` and `search_organizations` consume zero Apollo export credits. They monetize Apollo's 275M+ person and 73M+ account search index directly at 100% gross margin.
+2. **Mobile Phone Guardrail:**
+   All person enrichment calls (`enrich_person` and `bulk_enrich_people`) strictly pass `reveal_phone_number: false`. This avoids Apollo's 8-credit mobile surcharge ($0.08–$0.16 cost per call), maintaining healthy gross margin.
+3. **Free-on-Miss Alignment:**
+   When Apollo returns 0 matches or non-deliverable emails, Apollo charges 0 export credits and the gateway charges $0.00 USDC. Neither buyer nor merchant suffers economic loss on unresolvable identifiers.
+4. **Empirical Credit Consumption Verification:**
+   `POST /api/v1/people/bulk_match` returns `credits_consumed` in its live response payload. Empirical confirmation of exact credit consumption on multi-record batches requires a live probe with human approval (approx. 2 credits).

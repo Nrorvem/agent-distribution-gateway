@@ -21,6 +21,7 @@
 
 import { APOLLO_PRODUCTS } from "../src/verticals/option-a-apollo/catalog.ts";
 import { usdToAtomicUnits, lockPaymentAuthorization } from "../src/lib/x402-gate.ts";
+import { isApolloMockMode } from "../src/verticals/option-a-apollo/apollo-client.ts";
 
 const args = process.argv.slice(2);
 let baseUrl = "http://localhost:3000";
@@ -61,8 +62,8 @@ function shouldRun(testId: string): boolean {
   if (unpaidOnly) {
     return ["S1", "S2", "S6", "S7", "S8", "S9"].includes(testId);
   }
-  // S11 is only run when explicitly targeted via --only S11
-  if (testId === "S11") return false;
+  // S11 and S13 are only run when explicitly targeted
+  if (testId === "S11" || testId === "S13") return false;
   return true;
 }
 
@@ -232,6 +233,47 @@ async function run() {
         assert(Boolean(data.receipt), "Missing receipt in 200 response");
         assert(Boolean(data.receipt.receipt_id), "Missing receipt_id in receipt");
         results.push({ id: "S4", name: `${tag} POST valid body with payment -> HTTP 200 fulfilled with receipt`, passed: true });
+
+        // F2 verification: search_people with per_page: 25 must cap unlock.args.details to <= 10
+        if (product.id === "search_people") {
+          try {
+            const p25Res = await fetch(`${baseUrl}/api/v1/search/people`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-PAYMENT": DEV_BYPASS_TOKEN,
+              },
+              body: JSON.stringify({ organization_domains: ["apollo.io"], per_page: 25 }),
+            });
+            assert(p25Res.status === 200, `Expected 200 for 25-item search, got ${p25Res.status}`);
+            const p25Data = await p25Res.json();
+            assert(Boolean(p25Data.unlock), "Missing unlock object in 25-item people search");
+            assert(
+              p25Data.unlock.args.details.length <= 10,
+              `Expected unlock.args.details.length <= 10, got ${p25Data.unlock.args.details.length}`
+            );
+            assert(
+              Array.isArray(p25Data.unlock.remaining_batches),
+              "Expected unlock.remaining_batches array"
+            );
+            assert(
+              p25Data.unlock.remaining_batches.length > 0,
+              "Expected at least 1 remaining batch for 25-item search"
+            );
+            results.push({
+              id: "S4",
+              name: `[search_people] per_page: 25 chunking caps unlock batch to <= 10 (got ${p25Data.unlock.args.details.length}, ${p25Data.unlock.remaining_batches.length} remaining batches)`,
+              passed: true,
+            });
+          } catch (err: any) {
+            results.push({
+              id: "S4",
+              name: "[search_people] per_page: 25 chunking caps unlock batch to <= 10",
+              passed: false,
+              error: err.message,
+            });
+          }
+        }
       } catch (err: any) {
         results.push({ id: "S4", name: `${tag} POST valid body with payment -> HTTP 200 fulfilled with receipt`, passed: false, error: err.message });
       }
@@ -353,6 +395,7 @@ async function run() {
     const testRoutes = [
       { route: "/api/v1/search/people", body: { organization_domains: ["stripe.com"] } },
       { route: "/api/v1/search/organizations", body: { organization_name: "Stripe" } },
+      { route: "/api/v1/enrich/person", body: { domain: "stripe.com", first_name: "Patrick", last_name: "Collison" } },
       { route: "/api/v1/enrich/organization", body: { domain: "stripe.com" } },
       { route: "/api/v1/enrich/people/bulk", body: { details: [{ domain: "stripe.com", first_name: "Patrick" }] } },
       { route: "/api/v1/enrich/organizations/bulk", body: { domains: ["stripe.com"] } },
@@ -375,6 +418,85 @@ async function run() {
       } catch (err: any) {
         results.push({ id: "S11", name: `[${t.route}] Invalid upstream key returns 502 with no settlement`, passed: false, error: err.message });
       }
+    }
+  }
+
+  // S13: Production mode with missing/empty key -> never settles mock data (run via --only S13)
+  if (shouldRun("S13")) {
+    // Unit assertion on isApolloMockMode()
+    try {
+      const originalNodeEnv = process.env.NODE_ENV;
+      const originalVercelEnv = process.env.VERCEL_ENV;
+      const originalKey = process.env.APOLLO_API_KEY;
+      const originalMock = process.env.APOLLO_MOCK_MODE;
+
+      try {
+        (process.env as any).NODE_ENV = "production";
+        delete process.env.APOLLO_MOCK_MODE;
+        delete process.env.APOLLO_API_KEY;
+        delete process.env.VERCEL_ENV;
+        assert(
+          isApolloMockMode() === false,
+          "Expected isApolloMockMode() === false in production with empty key"
+        );
+        results.push({
+          id: "S13",
+          name: "Unit: isApolloMockMode() returns false in production when APOLLO_API_KEY is empty",
+          passed: true,
+        });
+      } finally {
+        (process.env as any).NODE_ENV = originalNodeEnv;
+        if (originalVercelEnv !== undefined) process.env.VERCEL_ENV = originalVercelEnv; else delete process.env.VERCEL_ENV;
+        if (originalKey !== undefined) process.env.APOLLO_API_KEY = originalKey; else delete process.env.APOLLO_API_KEY;
+        if (originalMock !== undefined) process.env.APOLLO_MOCK_MODE = originalMock; else delete process.env.APOLLO_MOCK_MODE;
+      }
+    } catch (err: any) {
+      results.push({
+        id: "S13",
+        name: "Unit: isApolloMockMode() returns false in production when APOLLO_API_KEY is empty",
+        passed: false,
+        error: err.message,
+      });
+    }
+
+    // Endpoint test against running server:
+    // POST /api/v1/enrich/person with DEV_BYPASS_TOKEN
+    // Should return 402 or 502, never 200 with payment_settled: true
+    try {
+      const res = await fetch(`${baseUrl}/api/v1/enrich/person`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-PAYMENT": DEV_BYPASS_TOKEN,
+        },
+        body: JSON.stringify({
+          first_name: "Patrick",
+          last_name: "Collison",
+          domain: "stripe.com",
+        }),
+      });
+
+      assert(
+        res.status === 402 || res.status === 502,
+        `Expected 402 or 502 in production mode without key, got ${res.status}`
+      );
+      const data = await res.json().catch(() => ({}));
+      assert(
+        data.payment_settled !== true,
+        "Invariant violation: payment_settled was true in production mode without key"
+      );
+      results.push({
+        id: "S13",
+        name: "Enrich person in production without key returns 402/502 (never settled 200)",
+        passed: true,
+      });
+    } catch (err: any) {
+      results.push({
+        id: "S13",
+        name: "Enrich person in production without key returns 402/502 (never settled 200)",
+        passed: false,
+        error: err.message,
+      });
     }
   }
 

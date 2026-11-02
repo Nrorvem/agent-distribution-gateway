@@ -1061,6 +1061,23 @@ export async function verifyX402Payment(
     };
   }
 
+  const authFrom = paymentPayload?.payload?.authorization?.from;
+  const authNonce = paymentPayload?.payload?.authorization?.nonce;
+  const authValidBefore = paymentPayload?.payload?.authorization?.validBefore
+    ? Number(paymentPayload.payload.authorization.validBefore)
+    : undefined;
+
+  // F7: Pre-check payment authorization lock before making facilitator calls to avoid burning rate limits on replays
+  if (authFrom && authNonce) {
+    const preCheck = checkPaymentAuthorizationLock(authFrom, authNonce);
+    if (!preCheck.allowed) {
+      return {
+        verified: false,
+        error: "Payment authorization already used",
+      };
+    }
+  }
+
   const payloadVersion = Number(paymentPayload?.x402Version) === 1 ? 1 : 2;
   const paymentRequirements =
     payloadVersion === 1
@@ -1178,14 +1195,8 @@ export async function verifyX402Payment(
 
     const verifiedPayer =
       verifyJson.payer ||
-      paymentPayload?.payload?.authorization?.from ||
+      authFrom ||
       "0xVerifiedAgentWallet";
-
-    const authFrom = paymentPayload?.payload?.authorization?.from;
-    const authNonce = paymentPayload?.payload?.authorization?.nonce;
-    const authValidBefore = paymentPayload?.payload?.authorization?.validBefore
-      ? Number(paymentPayload.payload.authorization.validBefore)
-      : undefined;
 
     let authKey: string | undefined;
     if (authFrom && authNonce) {

@@ -24,9 +24,14 @@ export async function GET(req: NextRequest) {
   const endpoints = APOLLO_PRODUCTS.map((product) => {
     const url = `${origin}${product.path}`;
     const unitPrice = product.pricing.unitUsd();
-    const atomic = usdToAtomicUnits(unitPrice);
+    const isBulk = product.funnelStage === "bulk_enrich";
+    const maxUnits = product.pricing.maxUnits || 10;
+    const probePriceUsd = isBulk
+      ? (Number(unitPrice) * maxUnits).toString()
+      : unitPrice;
+    const probeAtomic = usdToAtomicUnits(probePriceUsd);
     const spec = {
-      priceUsd: unitPrice,
+      priceUsd: probePriceUsd,
       bazaar: product.bazaar(),
     };
 
@@ -35,8 +40,9 @@ export async function GET(req: NextRequest) {
       url,
       method: product.method,
       description: `${product.title} ($${unitPrice} USDC / ${product.pricing.per} — Free on Miss: ${product.pricing.billingRule})`,
-      price: unitPrice,
-      amount: atomic,
+      price: probePriceUsd,
+      priceUnit: unitPrice,
+      amount: probeAtomic,
       currency: "USDC",
       asset: cfg.asset,
       network: cfg.networkCaip2,

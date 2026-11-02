@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
       network: cfg.networkCaip2,
       priceUsd: cfg.priceUsd,
       priceUsdMin: "0.01",
-      priceUsdMax: "0.03",
+      priceUsdMax: "0.25",
       freeOnMiss: true,
       currency: "USDC",
       recipientWallet: cfg.payTo,

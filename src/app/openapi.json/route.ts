@@ -116,11 +116,19 @@ export async function GET(req: NextRequest) {
         description: product.description,
         tags: product.tags,
         "x-payment-info": {
-          price: {
-            mode: "fixed",
-            currency: "USD",
-            amount: formattedPrice,
-          },
+          price:
+            product.funnelStage === "bulk_enrich"
+              ? {
+                  mode: "dynamic",
+                  currency: "USD",
+                  min: Number(unitPrice).toFixed(6),
+                  max: (Number(unitPrice) * (product.pricing.maxUnits || 10)).toFixed(6),
+                }
+              : {
+                  mode: "fixed",
+                  currency: "USD",
+                  amount: formattedPrice,
+                },
           freeOnMiss: true,
           protocols: [{ x402: {} }],
           ...(product.funnelStage === "bulk_enrich"

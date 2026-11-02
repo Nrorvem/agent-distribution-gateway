@@ -40,9 +40,10 @@ export async function POST(req: NextRequest) {
       bazaar: product.bazaar(),
     }),
     execute: searchPeopleWithApollo,
-    isBillable: (output) => output.matched && output.people.length > 0,
+    isBillable: (output) => output.matched && output.people.some((p) => p.has_email),
     receiptExtras: (output) => ({
       results_count: output.people.length,
+      emailable_count: output.people.filter((p) => p.has_email).length,
       page: output.pagination.page,
       total_entries: output.pagination.total_entries,
     }),

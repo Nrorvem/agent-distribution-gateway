@@ -217,8 +217,11 @@ export async function POST(req: NextRequest) {
         expectedSchema: prod.inputSchema,
         spec: () => ({ priceUsd: unitPriceUsd("search_people"), bazaar: prod.bazaar() }),
         execute: searchPeopleWithApollo,
-        isBillable: (out) => out.matched && out.people.length > 0,
-        receiptExtras: (out) => ({ results_count: out.people.length }),
+        isBillable: (out) => out.matched && out.people.some((p) => p.has_email),
+        receiptExtras: (out) => ({
+          results_count: out.people.length,
+          emailable_count: out.people.filter((p) => p.has_email).length,
+        }),
       });
     }
 

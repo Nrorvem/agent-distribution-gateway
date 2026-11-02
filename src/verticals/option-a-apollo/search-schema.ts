@@ -47,6 +47,7 @@ export interface PersonSearchResultItem {
   apollo_id: string;
   first_name: string;
   last_name: string | null;
+  last_name_obfuscated: string | null;
   full_name: string | null;
   title: string;
   seniority: string | null;
@@ -58,8 +59,8 @@ export interface PersonSearchResultItem {
     country: string | null;
   };
   organization: {
-    id: string;
-    name: string;
+    id: string | null;
+    name: string | null;
     primary_domain: string | null;
   };
   next_step: {
@@ -81,6 +82,13 @@ export interface PeopleSearchOutput {
     total_pages: number;
   };
   people: PersonSearchResultItem[];
+  unlock?: {
+    tool: "bulk_enrich_people";
+    rest: "POST /api/v1/enrich/people/bulk";
+    args: { details: Array<{ id: string }> };
+    estimated_price_usd: string;
+    description: string;
+  };
 }
 
 export interface OrgSearchInput {

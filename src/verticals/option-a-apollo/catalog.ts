@@ -453,6 +453,8 @@ export const APOLLO_PRODUCTS: ApolloProduct[] = [
         { organization_domains: ["apollo.io"], person_titles: ["CEO"] },
         {
           matched: true,
+          source: "apollo_live",
+          pagination: { page: 1, per_page: 10, total_entries: 1, total_pages: 1 },
           people: [
             {
               apollo_id: "64a7ff0cc4dfae00013df1a5",
@@ -513,6 +515,8 @@ export const APOLLO_PRODUCTS: ApolloProduct[] = [
         { organization_name: "Instacart" },
         {
           matched: true,
+          source: "apollo_live",
+          pagination: { page: 1, per_page: 10, total_entries: 1, total_pages: 1 },
           organizations: [
             {
               id: "5f1a2b3c4d5e6f0001112222",
@@ -605,6 +609,7 @@ export const APOLLO_PRODUCTS: ApolloProduct[] = [
         { domain: "apollo.io" },
         {
           matched: true,
+          source: "apollo_live",
           organization: {
             apollo_id: "5e66b6381e05b4008c8331b8",
             name: "Apollo.io",
@@ -665,6 +670,7 @@ export const APOLLO_PRODUCTS: ApolloProduct[] = [
         {
           matched: true,
           submitted_count: 1,
+          matched_count: 1,
           billable_count: 1,
           results: [{ index: 0, matched: true, person: { full_name: "Tim Zheng", email: "tim@apollo.io" } }],
         },

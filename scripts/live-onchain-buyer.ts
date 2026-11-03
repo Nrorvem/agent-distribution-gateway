@@ -173,38 +173,47 @@ async function main() {
     process.exit(1);
   }
 
+  const isProtectedPreview = Boolean(
+    process.env.VERCEL_OIDC_TOKEN && /^https:\/\/[^/]+\.vercel\.app\//.test(PRODUCTION_ENDPOINT)
+  );
+
   // Preflight check against Coinbase CDP x402 Validator so we never spend USDC if Bazaar schema validation would reject
-  try {
-    const valRes = await fetch("https://api.cdp.coinbase.com/platform/v2/x402/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        resource: PRODUCTION_ENDPOINT,
+  // (Skip external CDP probing when testing a protected preview URL behind Vercel Deployment Protection)
+  if (!isProtectedPreview) {
+    try {
+      const valRes = await fetch("https://api.cdp.coinbase.com/platform/v2/x402/validate", {
         method: "POST",
-      }),
-    });
-    if (valRes.ok) {
-      const valJson = (await valRes.json()) as {
-        valid?: boolean;
-        simulation?: { outcome?: string; rejectionReason?: string };
-        preflight?: Array<{ check: string; passed: boolean; detail: string }>;
-      };
-      const failedChecks = (valJson.preflight || []).filter((c) => !c.passed);
-      console.log(
-        `   • CDP Bazaar Preflight : valid=${valJson.valid}, simulation=${valJson.simulation?.outcome} (${
-          (valJson.preflight || []).length - failedChecks.length
-        }/${(valJson.preflight || []).length} checks passed)`
-      );
-      if (!valJson.valid || valJson.simulation?.outcome === "rejected") {
-        console.error(
-          `   ❌ Aborting before spending USDC: CDP Bazaar validator rejected discovery config:`,
-          failedChecks
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resource: PRODUCTION_ENDPOINT,
+          method: "POST",
+        }),
+      });
+      if (valRes.ok) {
+        const valJson = (await valRes.json()) as {
+          valid?: boolean;
+          simulation?: { outcome?: string; rejectionReason?: string };
+          preflight?: Array<{ check: string; passed: boolean; detail: string }>;
+        };
+        const failedChecks = (valJson.preflight || []).filter((c) => !c.passed);
+        console.log(
+          `   • CDP Bazaar Preflight : valid=${valJson.valid}, simulation=${valJson.simulation?.outcome} (${
+            (valJson.preflight || []).length - failedChecks.length
+          }/${(valJson.preflight || []).length} checks passed)`
         );
-        return;
+        if (!valJson.valid || valJson.simulation?.outcome === "rejected") {
+          console.error(
+            `   ❌ Aborting before spending USDC: CDP Bazaar validator rejected discovery config:`,
+            failedChecks
+          );
+          return;
+        }
       }
+    } catch {
+      // Ignore validator network errors
     }
-  } catch {
-    // Ignore validator network errors
+  } else {
+    console.log("   • CDP Bazaar Preflight : skipped (protected preview URL)");
   }
 
   const buyerPrivKey = process.env.BUYER_PRIVATE_KEY || localEnv.BUYER_PRIVATE_KEY || "";
@@ -284,6 +293,9 @@ async function main() {
     // Post-flight Base Mainnet USDC balance verification
     if (initialBalanceAtomic !== null) {
       try {
+        if (paidData.payment_settled) {
+          await new Promise((r) => setTimeout(r, 3000));
+        }
         const finalBalanceAtomic = await getUsdcBalance(buyerAddress, reqTerms.asset);
         const finalUsdcDisplay = (Number(finalBalanceAtomic) / 1_000_000).toFixed(4);
         const deltaAtomic = initialBalanceAtomic - finalBalanceAtomic;
@@ -297,7 +309,7 @@ async function main() {
       }
     }
 
-    if (paidRes.status === 200) {
+    if (paidRes.status === 200 && !isProtectedPreview) {
       console.log("\n3️⃣  Waiting 5s for Coinbase CDP x402 Bazaar async indexing...");
       await new Promise((r) => setTimeout(r, 5000));
       const bazaarRes = await fetch(

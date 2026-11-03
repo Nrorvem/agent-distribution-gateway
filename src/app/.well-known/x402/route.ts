@@ -24,11 +24,8 @@ export async function GET(req: NextRequest) {
   const endpoints = APOLLO_PRODUCTS.map((product) => {
     const url = `${origin}${product.path}`;
     const unitPrice = product.pricing.unitUsd();
-    const isBulk = product.funnelStage === "bulk_enrich";
-    const maxUnits = product.pricing.maxUnits || 10;
-    const probePriceUsd = isBulk
-      ? (Number(unitPrice) * maxUnits).toString()
-      : unitPrice;
+    // Probes (empty body) quote the per-unit price; bulk totals scale with submitted records.
+    const probePriceUsd = unitPrice;
     const probeAtomic = usdToAtomicUnits(probePriceUsd);
     const spec = {
       priceUsd: probePriceUsd,

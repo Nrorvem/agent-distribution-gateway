@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
     validate: validateBulkOrgInput,
     expectedSchema: product.inputSchema,
     spec: (input) => {
-      const count = input ? input.domains.length : 10;
+      const count = input ? input.domains.length : 1; // probes quote the per-record price
       return {
         priceUsd: totalPriceUsd("bulk_enrich_organizations", count),
         bazaar: product.bazaar(),

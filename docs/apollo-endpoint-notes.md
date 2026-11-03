@@ -146,11 +146,11 @@ This document records the empirical probe results and official schema notes for 
 
 ## 7. Credit Economics & Margin Analysis
 
-The gateway operates on a strictly positive unit economics model across all funnel stages, protected by Free-on-Miss refund semantics and upstream credit guardrails (`reveal_phone_number: false` strictly enforced).
+The gateway operates on a strictly positive unit economics model across all funnel stages, protected by Free-on-Miss refund semantics and upstream credit guardrails (`reveal_phone_number: false` strictly enforced). Upstream unit credit cost of **$0.01 / credit** was confirmed by the project owner on 2026-11-02.
 
 ### Per-Endpoint Unit Economics Table
 
-| Product ID | REST Route | Gateway Price (USDC) | Billing Rule | Apollo Credits / Call or Match | Upstream Cost @ $0.01/credit | Gross Margin % |
+| Product ID | REST Route | Gateway Price (USDC) | Billing Rule | Apollo Credits / Call or Match | Upstream Cost @ $0.01/credit (Owner-Confirmed) | Gross Margin % |
 |---|---|---|---|---|---|---|
 | `search_people` | `/api/v1/search/people` | **$0.01** / page | Free on Miss (`has_email: true` ≥ 1) | **0 credits** | $0.000 | **100.0%** |
 | `search_organizations` | `/api/v1/search/organizations` | **$0.02** / page | Free on Miss (≥ 1 company) | **0 credits** | $0.000 | **100.0%** |
@@ -168,4 +168,4 @@ The gateway operates on a strictly positive unit economics model across all funn
 3. **Free-on-Miss Alignment:**
    When Apollo returns 0 matches or non-deliverable emails, Apollo charges 0 export credits and the gateway charges $0.00 USDC. Neither buyer nor merchant suffers economic loss on unresolvable identifiers.
 4. **Empirical Credit Consumption Verification:**
-   `POST /api/v1/people/bulk_match` returns `credits_consumed` in its live response payload. Empirical confirmation of exact credit consumption on multi-record batches requires a live probe with human approval (approx. 2 credits).
+   `POST /api/v1/people/bulk_match` returns `credits_consumed` in its live response payload. Credit pricing at $0.01/credit is confirmed by owner (2026-11-02). An optional empirical probe of `credits_consumed` on multi-record batches can be executed whenever live on-chain tests run.

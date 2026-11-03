@@ -16,3 +16,6 @@ scripts/*.out
 AGENTS.md
 .agentignore
 *.tsbuildinfo
+
+# Internal review / fix logs (local only)
+docs/reviews/

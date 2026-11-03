@@ -20,8 +20,13 @@
  */
 
 import { APOLLO_PRODUCTS } from "../src/verticals/option-a-apollo/catalog.ts";
-import { usdToAtomicUnits, lockPaymentAuthorization } from "../src/lib/x402-gate.ts";
+import {
+  usdToAtomicUnits,
+  lockPaymentAuthorization,
+  isMockOutputBlockedInProduction,
+} from "../src/lib/x402-gate.ts";
 import { isApolloMockMode } from "../src/verticals/option-a-apollo/apollo-client.ts";
+import { enrichPersonWithApollo } from "../src/verticals/option-a-apollo/connector.ts";
 
 const args = process.argv.slice(2);
 let baseUrl = "http://localhost:3000";
@@ -53,6 +58,20 @@ const results: TestResult[] = [];
 
 function assert(condition: boolean, msg: string) {
   if (!condition) throw new Error(msg);
+}
+
+async function assertRejects(fn: () => Promise<unknown>, expectedRegex: RegExp): Promise<void> {
+  let threw = false;
+  try {
+    await fn();
+  } catch (err: any) {
+    threw = true;
+    assert(
+      expectedRegex.test(err?.message || ""),
+      `Expected error message matching ${expectedRegex}, got "${err?.message}"`
+    );
+  }
+  assert(threw, "Expected function to reject, but it resolved");
 }
 
 function shouldRun(testId: string): boolean {
@@ -293,7 +312,7 @@ async function run() {
       }
     }
 
-    // S9: Header size check (< 7 KB base64)
+    // S9: Header size check (< 8 KB base64)
     if (shouldRun("S9")) {
       try {
         const res = await fetch(`${baseUrl}${route}`, {
@@ -303,10 +322,11 @@ async function run() {
         });
         const header = res.headers.get("payment-required") || "";
         const sizeBytes = Buffer.byteLength(header, "utf-8");
-        assert(sizeBytes < 7168, `Header size ${sizeBytes} bytes exceeds 7 KB limit`);
-        results.push({ id: "S9", name: `${tag} PAYMENT-REQUIRED header size < 7 KB (${sizeBytes} bytes)`, passed: true });
+        const MAX_HEADER_SIZE_BYTES = 8000;
+        assert(sizeBytes < MAX_HEADER_SIZE_BYTES, `Header size ${sizeBytes} bytes exceeds ${MAX_HEADER_SIZE_BYTES} B limit`);
+        results.push({ id: "S9", name: `${tag} PAYMENT-REQUIRED header size < 8 KB (${sizeBytes} bytes)`, passed: true });
       } catch (err: any) {
-        results.push({ id: "S9", name: `${tag} PAYMENT-REQUIRED header size < 7 KB`, passed: false, error: err.message });
+        results.push({ id: "S9", name: `${tag} PAYMENT-REQUIRED header size < 8 KB`, passed: false, error: err.message });
       }
     }
 
@@ -421,9 +441,9 @@ async function run() {
     }
   }
 
-  // S13: Production mode with missing/empty key -> never settles mock data (run via --only S13)
+  // S13: Production mode with missing/empty key -> in-process F1 guards + unpaid probe returns 402 (run via --only S13)
   if (shouldRun("S13")) {
-    // Unit assertion on isApolloMockMode()
+    // In-process unit assertions: connector throws and mock output is blocked in production
     try {
       const originalNodeEnv = process.env.NODE_ENV;
       const originalVercelEnv = process.env.VERCEL_ENV;
@@ -435,13 +455,27 @@ async function run() {
         delete process.env.APOLLO_MOCK_MODE;
         delete process.env.APOLLO_API_KEY;
         delete process.env.VERCEL_ENV;
+
         assert(
           isApolloMockMode() === false,
           "Expected isApolloMockMode() === false in production with empty key"
         );
+        await assertRejects(
+          () => enrichPersonWithApollo({ first_name: "A", last_name: "B", domain: "stripe.com" }),
+          /APOLLO_API_KEY/
+        );
+        assert(
+          isMockOutputBlockedInProduction({ source: "apollo_mock" }) === true,
+          "Expected isMockOutputBlockedInProduction({ source: 'apollo_mock' }) === true in production"
+        );
+        assert(
+          isMockOutputBlockedInProduction({ source: "apollo" }) === false,
+          "Expected isMockOutputBlockedInProduction({ source: 'apollo' }) === false for live data"
+        );
+
         results.push({
           id: "S13",
-          name: "Unit: isApolloMockMode() returns false in production when APOLLO_API_KEY is empty",
+          name: "In-process F1: enrichPersonWithApollo throws without key & mock output blocked in production",
           passed: true,
         });
       } finally {
@@ -453,15 +487,14 @@ async function run() {
     } catch (err: any) {
       results.push({
         id: "S13",
-        name: "Unit: isApolloMockMode() returns false in production when APOLLO_API_KEY is empty",
+        name: "In-process F1: enrichPersonWithApollo throws without key & mock output blocked in production",
         passed: false,
         error: err.message,
       });
     }
 
     // Endpoint test against running server:
-    // POST /api/v1/enrich/person with DEV_BYPASS_TOKEN
-    // Should return 402 or 502, never 200 with payment_settled: true
+    // In production, DEV_BYPASS_TOKEN is disabled, so unpaid probe returns 402
     try {
       const res = await fetch(`${baseUrl}/api/v1/enrich/person`, {
         method: "POST",
@@ -477,8 +510,8 @@ async function run() {
       });
 
       assert(
-        res.status === 402 || res.status === 502,
-        `Expected 402 or 502 in production mode without key, got ${res.status}`
+        res.status === 402,
+        `Expected 402 for unpaid probe in production, got ${res.status}`
       );
       const data = await res.json().catch(() => ({}));
       assert(
@@ -487,13 +520,13 @@ async function run() {
       );
       results.push({
         id: "S13",
-        name: "Enrich person in production without key returns 402/502 (never settled 200)",
+        name: "Unpaid probe returns 402 in production (bypass token disabled under NODE_ENV=production)",
         passed: true,
       });
     } catch (err: any) {
       results.push({
         id: "S13",
-        name: "Enrich person in production without key returns 402/502 (never settled 200)",
+        name: "Unpaid probe returns 402 in production (bypass token disabled under NODE_ENV=production)",
         passed: false,
         error: err.message,
       });

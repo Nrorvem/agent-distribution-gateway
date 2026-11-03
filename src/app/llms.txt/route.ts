@@ -67,6 +67,7 @@ curl -X POST "${origin}/api/v1/enrich/person" \\
 \`\`\`
 
 ### Example 4: Bulk Person Enrichment (Up to 10 Profiles)
+> Charged for all submitted records if ≥ 1 email is found. Submit \`has_email: true\` IDs from \`search_people\`'s \`unlock\` hint.
 \`\`\`bash
 curl -X POST "${origin}/api/v1/enrich/people/bulk" \\
   -H "Content-Type: application/json" \\

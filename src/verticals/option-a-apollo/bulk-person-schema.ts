@@ -35,6 +35,8 @@ export interface BulkPersonOutput {
   results: BulkPersonResultItem[];
 }
 
+export const BULK_PERSON_MAX_ITEMS = 10;
+
 function unwrapLlmWrappers(raw: Record<string, unknown>): Record<string, unknown> {
   let current = { ...raw };
   for (const wrapperKey of ["input", "params", "arguments", "data", "body"]) {
@@ -69,10 +71,10 @@ export function validateBulkPersonInput(
     };
   }
 
-  if (rawList.length > 10) {
+  if (rawList.length > BULK_PERSON_MAX_ITEMS) {
     return {
       valid: false,
-      error: `Batch size of ${rawList.length} exceeds the maximum limit of 10 profiles per call.`,
+      error: `Batch size of ${rawList.length} exceeds the maximum limit of ${BULK_PERSON_MAX_ITEMS} profiles per call.`,
     };
   }
 

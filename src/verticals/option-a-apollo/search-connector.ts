@@ -10,6 +10,7 @@
 
 import { apolloRequest, isApolloMockMode } from "./apollo-client.ts";
 import { totalPriceUsd } from "./pricing.ts";
+import { BULK_PERSON_MAX_ITEMS } from "./bulk-person-schema.ts";
 import type {
   PeopleSearchInput,
   PeopleSearchOutput,
@@ -25,6 +26,32 @@ function isNomatchTrigger(input: PeopleSearchInput | OrgSearchInput): boolean {
   if ("domains" in input && input.domains?.includes("nomatch.invalid")) return true;
   if ("organization_name" in input && input.organization_name === "nomatch.invalid") return true;
   return false;
+}
+
+/**
+ * Builds the chunked bulk-unlock hint from searchable people profiles.
+ * Sourced directly from BULK_PERSON_MAX_ITEMS to keep batch limits strictly aligned.
+ */
+export function buildUnlockHint(
+  people: PersonSearchResultItem[]
+): PeopleSearchOutput["unlock"] {
+  const emailablePeople = people.filter((p) => p.has_email && p.apollo_id);
+  if (emailablePeople.length === 0) return undefined;
+
+  const ids = emailablePeople.map((p) => ({ id: p.apollo_id }));
+  const chunks = Array.from(
+    { length: Math.ceil(ids.length / BULK_PERSON_MAX_ITEMS) },
+    (_, i) => ids.slice(i * BULK_PERSON_MAX_ITEMS, (i + 1) * BULK_PERSON_MAX_ITEMS)
+  );
+
+  return {
+    tool: "bulk_enrich_people",
+    rest: "POST /api/v1/enrich/people/bulk",
+    args: { details: chunks[0] },
+    remaining_batches: chunks.slice(1).map((details) => ({ details })),
+    estimated_price_usd: totalPriceUsd("bulk_enrich_people", ids.length),
+    description: `Enrich ${ids.length} reachable profile(s) in ${chunks.length} call(s) of ≤${BULK_PERSON_MAX_ITEMS}`,
+  };
 }
 
 export function buildMockPeopleSearch(input: PeopleSearchInput): PeopleSearchOutput {
@@ -82,24 +109,7 @@ export function buildMockPeopleSearch(input: PeopleSearchInput): PeopleSearchOut
     };
   });
 
-  const BULK_MAX = 10;
-  const emailablePeople = mockPeople.filter((p) => p.has_email && p.apollo_id);
-  let unlock: PeopleSearchOutput["unlock"] = undefined;
-  if (emailablePeople.length > 0) {
-    const ids = emailablePeople.map((p) => ({ id: p.apollo_id }));
-    const chunks = Array.from(
-      { length: Math.ceil(ids.length / BULK_MAX) },
-      (_, i) => ids.slice(i * BULK_MAX, (i + 1) * BULK_MAX)
-    );
-    unlock = {
-      tool: "bulk_enrich_people",
-      rest: "POST /api/v1/enrich/people/bulk",
-      args: { details: chunks[0] },
-      remaining_batches: chunks.slice(1).map((details) => ({ details })),
-      estimated_price_usd: totalPriceUsd("bulk_enrich_people", ids.length),
-      description: `Enrich ${ids.length} reachable profile(s) in ${chunks.length} call(s) of ≤10`,
-    };
-  }
+  const unlock = buildUnlockHint(mockPeople);
 
   return {
     matched: true,
@@ -262,24 +272,7 @@ export async function searchPeopleWithApollo(
       };
     });
 
-    const emailablePeople = people.filter((p) => p.has_email && p.apollo_id);
-    let unlock: PeopleSearchOutput["unlock"] = undefined;
-    if (emailablePeople.length > 0) {
-      const BULK_MAX = 10;
-      const ids = emailablePeople.map((p) => ({ id: p.apollo_id }));
-      const chunks = Array.from(
-        { length: Math.ceil(ids.length / BULK_MAX) },
-        (_, i) => ids.slice(i * BULK_MAX, (i + 1) * BULK_MAX)
-      );
-      unlock = {
-        tool: "bulk_enrich_people",
-        rest: "POST /api/v1/enrich/people/bulk",
-        args: { details: chunks[0] },
-        remaining_batches: chunks.slice(1).map((details) => ({ details })),
-        estimated_price_usd: totalPriceUsd("bulk_enrich_people", ids.length),
-        description: `Enrich ${ids.length} reachable profile(s) in ${chunks.length} call(s) of ≤10`,
-      };
-    }
+    const unlock = buildUnlockHint(people);
 
     return {
       matched: people.length > 0,

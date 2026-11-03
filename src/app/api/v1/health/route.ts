@@ -6,6 +6,7 @@ interface CachedHealth {
   data: {
     apollo: "ok" | "degraded";
     minute_usage_pct: number;
+    mode: "mock" | "live";
   };
 }
 
@@ -13,16 +14,18 @@ let healthCache: CachedHealth | null = null;
 const CACHE_TTL_MS = 60_000; // 60 seconds
 
 export async function GET() {
+  const mode: "mock" | "live" = isApolloMockMode() ? "mock" : "live";
   const now = Date.now();
   if (healthCache && now - healthCache.timestamp < CACHE_TTL_MS) {
     return NextResponse.json({
       ...healthCache.data,
+      mode,
       cached: true,
     });
   }
 
   if (isApolloMockMode()) {
-    const data = { apollo: "ok" as const, minute_usage_pct: 0 };
+    const data = { apollo: "ok" as const, minute_usage_pct: 0, mode: "mock" as const };
     healthCache = { timestamp: now, data };
     return NextResponse.json({ ...data, cached: false });
   }
@@ -30,7 +33,7 @@ export async function GET() {
   const apiKey = process.env.APOLLO_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
-      { apollo: "degraded", minute_usage_pct: 0, error: "Missing upstream credentials" },
+      { apollo: "degraded", minute_usage_pct: 0, mode, error: "Missing upstream credentials" },
       { status: 503 }
     );
   }
@@ -52,7 +55,7 @@ export async function GET() {
     clearTimeout(timer);
 
     if (!res.ok) {
-      const data = { apollo: "degraded" as const, minute_usage_pct: 0 };
+      const data = { apollo: "degraded" as const, minute_usage_pct: 0, mode };
       healthCache = { timestamp: now, data };
       return NextResponse.json(data, { status: 503 });
     }
@@ -73,11 +76,12 @@ export async function GET() {
     const data = {
       apollo: "ok" as const,
       minute_usage_pct: Number(maxPct.toFixed(2)),
+      mode,
     };
     healthCache = { timestamp: now, data };
     return NextResponse.json({ ...data, cached: false });
   } catch {
-    const data = { apollo: "degraded" as const, minute_usage_pct: 0 };
+    const data = { apollo: "degraded" as const, minute_usage_pct: 0, mode };
     return NextResponse.json(data, { status: 503 });
   }
 }

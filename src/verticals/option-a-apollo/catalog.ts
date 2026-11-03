@@ -12,6 +12,7 @@
  */
 
 import { PERSON_ENRICH_JSON_SCHEMA } from "./schema.ts";
+import { BULK_PERSON_MAX_ITEMS } from "./bulk-person-schema.ts";
 import {
   PERSON_ENRICH_BAZAAR_EXTENSION,
   type PaidResourceSpec,
@@ -275,14 +276,14 @@ const BULK_PERSON_ITEM_SCHEMA: Record<string, unknown> = {
 const BULK_PERSON_ENRICH_INPUT_SCHEMA: Record<string, unknown> = {
   type: "object",
   required: ["details"],
-  description: "Batch of 1 to 10 person records to enrich with verified deliverable emails.",
+  description: `Batch of 1 to ${BULK_PERSON_MAX_ITEMS} person records to enrich with verified deliverable emails.`,
   properties: {
     details: {
       type: "array",
       minItems: 1,
-      maxItems: 10,
+      maxItems: BULK_PERSON_MAX_ITEMS,
       items: BULK_PERSON_ITEM_SCHEMA,
-      description: "Array of 1 to 10 person identifier objects.",
+      description: `Array of 1 to ${BULK_PERSON_MAX_ITEMS} person identifier objects.`,
     },
     reveal_personal_emails: { type: "boolean", default: false },
   },
@@ -629,7 +630,7 @@ export const APOLLO_PRODUCTS: ApolloProduct[] = [
     pricing: {
       unitUsd: () => unitPriceUsd("bulk_enrich_people"),
       per: "record",
-      maxUnits: 10,
+      maxUnits: BULK_PERSON_MAX_ITEMS,
       billingRule: "Priced per record submitted ($0.025 each); charged for all submitted records if ≥ 1 email is found; $0.00 if none. Submit has_email: true IDs from search_people's unlock hint.",
     },
     inputSchema: BULK_PERSON_ENRICH_INPUT_SCHEMA,

@@ -25,6 +25,26 @@ import {
   privateKeyToAddress,
 } from "../src/lib/eip3009-signer.ts";
 
+const EXPECTED_PAY_TO = "0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC";
+const EXPECTED_BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+
+async function getUsdcBalance(buyerAddress: string, usdcAddress: string): Promise<bigint> {
+  const balCallData =
+    "0x70a08231" + buyerAddress.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+  const rpcRes = await fetch("https://mainnet.base.org", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_call",
+      params: [{ to: usdcAddress, data: balCallData }, "latest"],
+    }),
+  });
+  const rpcJson = (await rpcRes.json()) as { result?: string };
+  return BigInt(rpcJson.result || "0x0");
+}
+
 function loadEnvLocal(): Record<string, string> {
   const envPath = path.resolve(process.cwd(), ".env.local");
   const out: Record<string, string> = {};
@@ -59,9 +79,21 @@ if (bodyFlagIdx !== -1 && args[bodyFlagIdx + 1]) {
   }
 }
 
+const maxUsdFlagIdx = args.indexOf("--max-usd");
+let maxUsdCap = 0.05;
+if (maxUsdFlagIdx !== -1 && args[maxUsdFlagIdx + 1]) {
+  const parsed = Number(args[maxUsdFlagIdx + 1]);
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    console.error("❌ Invalid positive number passed to --max-usd");
+    process.exit(1);
+  }
+  maxUsdCap = parsed;
+}
+
 const positionalArgs = args.filter((a, i) =>
   a !== "--url" && (urlFlagIdx === -1 || i !== urlFlagIdx + 1) &&
-  a !== "--body" && (bodyFlagIdx === -1 || i !== bodyFlagIdx + 1)
+  a !== "--body" && (bodyFlagIdx === -1 || i !== bodyFlagIdx + 1) &&
+  a !== "--max-usd" && (maxUsdFlagIdx === -1 || i !== maxUsdFlagIdx + 1)
 );
 
 const PRODUCTION_ENDPOINT =
@@ -99,19 +131,47 @@ async function main() {
   }
 
   const reqTerms = challengeData.accepts?.[0];
+  if (!reqTerms) {
+    console.error("❌ Challenge accepts[0] missing. Aborting without signing.");
+    process.exit(1);
+  }
   const atomicAmount = String(reqTerms?.amount || reqTerms?.maxAmountRequired || "30000");
-  const usdDisplay = (Number(atomicAmount) / 1_000_000).toFixed(2);
+  const amountUsd = Number(atomicAmount) / 1_000_000;
+  const usdDisplay = amountUsd.toFixed(2);
   console.log(`   • x402 Version    : v${challengeData.x402Version}`);
   console.log(`   • x402 Network    : ${reqTerms?.network}`);
   console.log(`   • USDC Contract   : ${reqTerms?.asset}`);
   console.log(`   • Pay To Wallet   : ${reqTerms?.payTo}`);
   console.log(`   • Amount Required : $${usdDisplay} USDC (${atomicAmount} atomic units)`);
+  console.log(`   • Spending Cap    : $${maxUsdCap.toFixed(4)} USD`);
   console.log(
     `   • Bazaar Discovery: discoverable=${Boolean(
       challengeData.extensions?.bazaar?.info?.input?.discoverable ||
         challengeData.extensions?.bazaar?.discoverable
     )}\n`
   );
+
+  // P1 Safety Guards: Exit non-zero before signing if cap exceeded or recipient mismatch
+  if (amountUsd > maxUsdCap) {
+    console.error(
+      `❌ Spending Cap Exceeded: Challenge requires $${amountUsd.toFixed(4)} USD, exceeding max-usd cap of $${maxUsdCap.toFixed(4)} USD. Aborting without signing.`
+    );
+    process.exit(1);
+  }
+
+  if (String(reqTerms.payTo || "").toLowerCase() !== EXPECTED_PAY_TO.toLowerCase()) {
+    console.error(
+      `❌ Unexpected payTo Wallet: Challenge specified ${reqTerms.payTo}, expected ${EXPECTED_PAY_TO}. Aborting without signing.`
+    );
+    process.exit(1);
+  }
+
+  if (String(reqTerms.asset || "").toLowerCase() !== EXPECTED_BASE_USDC.toLowerCase()) {
+    console.error(
+      `❌ Unexpected Asset: Challenge specified ${reqTerms.asset}, expected Base USDC (${EXPECTED_BASE_USDC}). Aborting without signing.`
+    );
+    process.exit(1);
+  }
 
   // Preflight check against Coinbase CDP x402 Validator so we never spend USDC if Bazaar schema validation would reject
   try {
@@ -157,25 +217,13 @@ async function main() {
     console.log(`   • Paying To (Ledger) : ${reqTerms.payTo}`);
 
     // Pre-flight Base Mainnet USDC balance check
+    let initialBalanceAtomic: bigint | null = null;
     try {
-      const balCallData =
-        "0x70a08231" + buyerAddress.toLowerCase().replace(/^0x/, "").padStart(64, "0");
-      const rpcRes = await fetch("https://mainnet.base.org", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "eth_call",
-          params: [{ to: reqTerms.asset, data: balCallData }, "latest"],
-        }),
-      });
-      const rpcJson = (await rpcRes.json()) as { result?: string };
-      const buyerUsdcAtomic = BigInt(rpcJson.result || "0x0");
-      const buyerUsdcDisplay = (Number(buyerUsdcAtomic) / 1_000_000).toFixed(2);
-      console.log(`   • Buyer USDC Balance : $${buyerUsdcDisplay} USDC (${buyerUsdcAtomic.toString()} atomic units)`);
+      initialBalanceAtomic = await getUsdcBalance(buyerAddress, reqTerms.asset);
+      const buyerUsdcDisplay = (Number(initialBalanceAtomic) / 1_000_000).toFixed(4);
+      console.log(`   • Buyer USDC (Before): $${buyerUsdcDisplay} USDC (${initialBalanceAtomic.toString()} atomic units)`);
 
-      if (buyerUsdcAtomic < BigInt(atomicAmount)) {
+      if (initialBalanceAtomic < BigInt(atomicAmount)) {
         console.log(
           `\n⚠️  Insufficient Base Mainnet USDC in test buyer wallet (${buyerAddress}).`
         );
@@ -186,8 +234,8 @@ async function main() {
           `   👉 Send at least $${usdDisplay} USDC on Base Mainnet to ${buyerAddress} (it will settle right back into your Ledger ${reqTerms.payTo} via Coinbase CDP Facilitator) and re-run this script.\n`
         );
       }
-    } catch {
-      // Ignore RPC pre-flight check errors and proceed
+    } catch (balErr: any) {
+      console.warn(`   ⚠️ Could not fetch initial USDC balance: ${balErr.message}`);
     }
 
     console.log(`   • Signing EIP-3009 TransferWithAuthorization ($${usdDisplay} USDC, 0 ETH gas)...`);
@@ -232,6 +280,22 @@ async function main() {
     }
     console.log("\nResponse Body:");
     console.log(JSON.stringify(paidData, null, 2));
+
+    // Post-flight Base Mainnet USDC balance verification
+    if (initialBalanceAtomic !== null) {
+      try {
+        const finalBalanceAtomic = await getUsdcBalance(buyerAddress, reqTerms.asset);
+        const finalUsdcDisplay = (Number(finalBalanceAtomic) / 1_000_000).toFixed(4);
+        const deltaAtomic = initialBalanceAtomic - finalBalanceAtomic;
+        const deltaDisplay = (Number(deltaAtomic) / 1_000_000).toFixed(4);
+        console.log(`\n💰 On-Chain Balance Verification:`);
+        console.log(`   • Buyer USDC (Before): $${(Number(initialBalanceAtomic) / 1_000_000).toFixed(4)} USDC`);
+        console.log(`   • Buyer USDC (After) : $${finalUsdcDisplay} USDC`);
+        console.log(`   • Net On-Chain Spent : $${deltaDisplay} USDC (${deltaAtomic.toString()} atomic units)`);
+      } catch (balErr: any) {
+        console.warn(`   ⚠️ Could not fetch final USDC balance: ${balErr.message}`);
+      }
+    }
 
     if (paidRes.status === 200) {
       console.log("\n3️⃣  Waiting 5s for Coinbase CDP x402 Bazaar async indexing...");

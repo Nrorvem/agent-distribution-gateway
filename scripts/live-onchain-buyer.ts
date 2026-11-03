@@ -25,6 +25,26 @@ import {
   privateKeyToAddress,
 } from "../src/lib/eip3009-signer.ts";
 
+const EXPECTED_PAY_TO = "0x7C38096030c9CF41Ec551dAcDFC1aBaA60590AbC";
+const EXPECTED_BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+
+async function getUsdcBalance(buyerAddress: string, usdcAddress: string): Promise<bigint> {
+  const balCallData =
+    "0x70a08231" + buyerAddress.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+  const rpcRes = await fetch("https://mainnet.base.org", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_call",
+      params: [{ to: usdcAddress, data: balCallData }, "latest"],
+    }),
+  });
+  const rpcJson = (await rpcRes.json()) as { result?: string };
+  return BigInt(rpcJson.result || "0x0");
+}
+
 function loadEnvLocal(): Record<string, string> {
   const envPath = path.resolve(process.cwd(), ".env.local");
   const out: Record<string, string> = {};
@@ -47,7 +67,34 @@ function loadEnvLocal(): Record<string, string> {
 const args = process.argv.slice(2);
 const urlFlagIdx = args.indexOf("--url");
 const endpointFromArgs = urlFlagIdx !== -1 && args[urlFlagIdx + 1] ? args[urlFlagIdx + 1] : undefined;
-const positionalArgs = args.filter((a, i) => a !== "--url" && (urlFlagIdx === -1 || i !== urlFlagIdx + 1));
+
+const bodyFlagIdx = args.indexOf("--body");
+let bodyFromArgs: Record<string, unknown> | undefined;
+if (bodyFlagIdx !== -1 && args[bodyFlagIdx + 1]) {
+  try {
+    bodyFromArgs = JSON.parse(args[bodyFlagIdx + 1]);
+  } catch (err: any) {
+    console.error("❌ Invalid JSON passed to --body:", err.message);
+    process.exit(1);
+  }
+}
+
+const maxUsdFlagIdx = args.indexOf("--max-usd");
+let maxUsdCap = 0.05;
+if (maxUsdFlagIdx !== -1 && args[maxUsdFlagIdx + 1]) {
+  const parsed = Number(args[maxUsdFlagIdx + 1]);
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    console.error("❌ Invalid positive number passed to --max-usd");
+    process.exit(1);
+  }
+  maxUsdCap = parsed;
+}
+
+const positionalArgs = args.filter((a, i) =>
+  a !== "--url" && (urlFlagIdx === -1 || i !== urlFlagIdx + 1) &&
+  a !== "--body" && (bodyFlagIdx === -1 || i !== bodyFlagIdx + 1) &&
+  a !== "--max-usd" && (maxUsdFlagIdx === -1 || i !== maxUsdFlagIdx + 1)
+);
 
 const PRODUCTION_ENDPOINT =
   endpointFromArgs ||
@@ -56,7 +103,7 @@ const PRODUCTION_ENDPOINT =
 
 async function main() {
   const localEnv = loadEnvLocal();
-  const payload = {
+  const payload = bodyFromArgs || {
     first_name: positionalArgs[0] || "Fidji",
     last_name: positionalArgs[1] || "Simo",
     domain: positionalArgs[2] || "instacart.com",
@@ -64,7 +111,7 @@ async function main() {
 
   console.log("================================================================================");
   console.log(`🌐 CALLING LIVE PRODUCTION GATEWAY: ${PRODUCTION_ENDPOINT}`);
-  console.log(`👤 Target Profile: ${payload.first_name} ${payload.last_name} @ ${payload.domain}`);
+  console.log(`📦 Request Payload:`, JSON.stringify(payload, null, 2));
   console.log("================================================================================\n");
 
   // 1. Send initial unpaid request to trigger HTTP 402 Payment Required challenge
@@ -84,13 +131,19 @@ async function main() {
   }
 
   const reqTerms = challengeData.accepts?.[0];
+  if (!reqTerms) {
+    console.error("❌ Challenge accepts[0] missing. Aborting without signing.");
+    process.exit(1);
+  }
   const atomicAmount = String(reqTerms?.amount || reqTerms?.maxAmountRequired || "30000");
-  const usdDisplay = (Number(atomicAmount) / 1_000_000).toFixed(2);
+  const amountUsd = Number(atomicAmount) / 1_000_000;
+  const usdDisplay = amountUsd.toFixed(2);
   console.log(`   • x402 Version    : v${challengeData.x402Version}`);
   console.log(`   • x402 Network    : ${reqTerms?.network}`);
   console.log(`   • USDC Contract   : ${reqTerms?.asset}`);
   console.log(`   • Pay To Wallet   : ${reqTerms?.payTo}`);
   console.log(`   • Amount Required : $${usdDisplay} USDC (${atomicAmount} atomic units)`);
+  console.log(`   • Spending Cap    : $${maxUsdCap.toFixed(4)} USD`);
   console.log(
     `   • Bazaar Discovery: discoverable=${Boolean(
       challengeData.extensions?.bazaar?.info?.input?.discoverable ||
@@ -98,38 +151,69 @@ async function main() {
     )}\n`
   );
 
+  // P1 Safety Guards: Exit non-zero before signing if cap exceeded or recipient mismatch
+  if (amountUsd > maxUsdCap) {
+    console.error(
+      `❌ Spending Cap Exceeded: Challenge requires $${amountUsd.toFixed(4)} USD, exceeding max-usd cap of $${maxUsdCap.toFixed(4)} USD. Aborting without signing.`
+    );
+    process.exit(1);
+  }
+
+  if (String(reqTerms.payTo || "").toLowerCase() !== EXPECTED_PAY_TO.toLowerCase()) {
+    console.error(
+      `❌ Unexpected payTo Wallet: Challenge specified ${reqTerms.payTo}, expected ${EXPECTED_PAY_TO}. Aborting without signing.`
+    );
+    process.exit(1);
+  }
+
+  if (String(reqTerms.asset || "").toLowerCase() !== EXPECTED_BASE_USDC.toLowerCase()) {
+    console.error(
+      `❌ Unexpected Asset: Challenge specified ${reqTerms.asset}, expected Base USDC (${EXPECTED_BASE_USDC}). Aborting without signing.`
+    );
+    process.exit(1);
+  }
+
+  const isProtectedPreview = Boolean(
+    process.env.VERCEL_OIDC_TOKEN && /^https:\/\/[^/]+\.vercel\.app\//.test(PRODUCTION_ENDPOINT)
+  );
+
   // Preflight check against Coinbase CDP x402 Validator so we never spend USDC if Bazaar schema validation would reject
-  try {
-    const valRes = await fetch("https://api.cdp.coinbase.com/platform/v2/x402/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        resource: PRODUCTION_ENDPOINT,
+  // (Skip external CDP probing when testing a protected preview URL behind Vercel Deployment Protection)
+  if (!isProtectedPreview) {
+    try {
+      const valRes = await fetch("https://api.cdp.coinbase.com/platform/v2/x402/validate", {
         method: "POST",
-      }),
-    });
-    if (valRes.ok) {
-      const valJson = (await valRes.json()) as {
-        valid?: boolean;
-        simulation?: { outcome?: string; rejectionReason?: string };
-        preflight?: Array<{ check: string; passed: boolean; detail: string }>;
-      };
-      const failedChecks = (valJson.preflight || []).filter((c) => !c.passed);
-      console.log(
-        `   • CDP Bazaar Preflight : valid=${valJson.valid}, simulation=${valJson.simulation?.outcome} (${
-          (valJson.preflight || []).length - failedChecks.length
-        }/${(valJson.preflight || []).length} checks passed)`
-      );
-      if (!valJson.valid || valJson.simulation?.outcome === "rejected") {
-        console.error(
-          `   ❌ Aborting before spending USDC: CDP Bazaar validator rejected discovery config:`,
-          failedChecks
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resource: PRODUCTION_ENDPOINT,
+          method: "POST",
+        }),
+      });
+      if (valRes.ok) {
+        const valJson = (await valRes.json()) as {
+          valid?: boolean;
+          simulation?: { outcome?: string; rejectionReason?: string };
+          preflight?: Array<{ check: string; passed: boolean; detail: string }>;
+        };
+        const failedChecks = (valJson.preflight || []).filter((c) => !c.passed);
+        console.log(
+          `   • CDP Bazaar Preflight : valid=${valJson.valid}, simulation=${valJson.simulation?.outcome} (${
+            (valJson.preflight || []).length - failedChecks.length
+          }/${(valJson.preflight || []).length} checks passed)`
         );
-        return;
+        if (!valJson.valid || valJson.simulation?.outcome === "rejected") {
+          console.error(
+            `   ❌ Aborting before spending USDC: CDP Bazaar validator rejected discovery config:`,
+            failedChecks
+          );
+          return;
+        }
       }
+    } catch {
+      // Ignore validator network errors
     }
-  } catch {
-    // Ignore validator network errors
+  } else {
+    console.log("   • CDP Bazaar Preflight : skipped (protected preview URL)");
   }
 
   const buyerPrivKey = process.env.BUYER_PRIVATE_KEY || localEnv.BUYER_PRIVATE_KEY || "";
@@ -142,25 +226,13 @@ async function main() {
     console.log(`   • Paying To (Ledger) : ${reqTerms.payTo}`);
 
     // Pre-flight Base Mainnet USDC balance check
+    let initialBalanceAtomic: bigint | null = null;
     try {
-      const balCallData =
-        "0x70a08231" + buyerAddress.toLowerCase().replace(/^0x/, "").padStart(64, "0");
-      const rpcRes = await fetch("https://mainnet.base.org", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "eth_call",
-          params: [{ to: reqTerms.asset, data: balCallData }, "latest"],
-        }),
-      });
-      const rpcJson = (await rpcRes.json()) as { result?: string };
-      const buyerUsdcAtomic = BigInt(rpcJson.result || "0x0");
-      const buyerUsdcDisplay = (Number(buyerUsdcAtomic) / 1_000_000).toFixed(2);
-      console.log(`   • Buyer USDC Balance : $${buyerUsdcDisplay} USDC (${buyerUsdcAtomic.toString()} atomic units)`);
+      initialBalanceAtomic = await getUsdcBalance(buyerAddress, reqTerms.asset);
+      const buyerUsdcDisplay = (Number(initialBalanceAtomic) / 1_000_000).toFixed(4);
+      console.log(`   • Buyer USDC (Before): $${buyerUsdcDisplay} USDC (${initialBalanceAtomic.toString()} atomic units)`);
 
-      if (buyerUsdcAtomic < BigInt(atomicAmount)) {
+      if (initialBalanceAtomic < BigInt(atomicAmount)) {
         console.log(
           `\n⚠️  Insufficient Base Mainnet USDC in test buyer wallet (${buyerAddress}).`
         );
@@ -171,8 +243,8 @@ async function main() {
           `   👉 Send at least $${usdDisplay} USDC on Base Mainnet to ${buyerAddress} (it will settle right back into your Ledger ${reqTerms.payTo} via Coinbase CDP Facilitator) and re-run this script.\n`
         );
       }
-    } catch {
-      // Ignore RPC pre-flight check errors and proceed
+    } catch (balErr: any) {
+      console.warn(`   ⚠️ Could not fetch initial USDC balance: ${balErr.message}`);
     }
 
     console.log(`   • Signing EIP-3009 TransferWithAuthorization ($${usdDisplay} USDC, 0 ETH gas)...`);
@@ -202,11 +274,42 @@ async function main() {
       body: JSON.stringify(payload),
     });
 
+    const paymentSettledHeader = paidRes.headers.get("x-payment-settled");
     const paidData = (await paidRes.json()) as Record<string, any>;
-    console.log(`   • Response Status : HTTP ${paidRes.status}\n`);
+    console.log(`   • Response Status    : HTTP ${paidRes.status}`);
+    console.log(`   • X-Payment-Settled  : ${paymentSettledHeader || "absent"}`);
+    if (paidData.receipt?.amount_usd) {
+      console.log(`   • Amount Charged     : $${paidData.receipt.amount_usd} USD`);
+    }
+    if (paidData.receipt?.tx_hash) {
+      console.log(`   • On-Chain Tx Hash   : ${paidData.receipt.tx_hash}`);
+      console.log(`   • BaseScan Link      : https://basescan.org/tx/${paidData.receipt.tx_hash}`);
+    } else if (paidData.receipt?.free_on_miss) {
+      console.log(`   • Free-on-Miss       : true ($0.00 settled on-chain)`);
+    }
+    console.log("\nResponse Body:");
     console.log(JSON.stringify(paidData, null, 2));
 
-    if (paidRes.status === 200) {
+    // Post-flight Base Mainnet USDC balance verification
+    if (initialBalanceAtomic !== null) {
+      try {
+        if (paidData.payment_settled) {
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+        const finalBalanceAtomic = await getUsdcBalance(buyerAddress, reqTerms.asset);
+        const finalUsdcDisplay = (Number(finalBalanceAtomic) / 1_000_000).toFixed(4);
+        const deltaAtomic = initialBalanceAtomic - finalBalanceAtomic;
+        const deltaDisplay = (Number(deltaAtomic) / 1_000_000).toFixed(4);
+        console.log(`\n💰 On-Chain Balance Verification:`);
+        console.log(`   • Buyer USDC (Before): $${(Number(initialBalanceAtomic) / 1_000_000).toFixed(4)} USDC`);
+        console.log(`   • Buyer USDC (After) : $${finalUsdcDisplay} USDC`);
+        console.log(`   • Net On-Chain Spent : $${deltaDisplay} USDC (${deltaAtomic.toString()} atomic units)`);
+      } catch (balErr: any) {
+        console.warn(`   ⚠️ Could not fetch final USDC balance: ${balErr.message}`);
+      }
+    }
+
+    if (paidRes.status === 200 && !isProtectedPreview) {
       console.log("\n3️⃣  Waiting 5s for Coinbase CDP x402 Bazaar async indexing...");
       await new Promise((r) => setTimeout(r, 5000));
       const bazaarRes = await fetch(

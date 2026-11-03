@@ -1,13 +1,13 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.Nrorvem/apollo-person-enrichment",
-  "title": "Apollo.io B2B Person Enrichment & Verified Email Finder (x402)",
-  "description": "Apollo.io B2B Person Enrichment & Verified Work Email Finder via x402 on Base ($0.03, free on miss).",
+  "name": "io.github.Nrorvem/apollo-full-funnel-gateway",
+  "title": "Apollo.io Full-Funnel B2B Data Gateway (x402)",
+  "description": "Full-funnel B2B data suite: Company Search, People Search, Person Enrichment & Work Email Lookup, Firmographics & Bulk Operations powered by Apollo.io on Base via x402 v2 (Free-on-Miss).",
   "repository": {
     "url": "https://github.com/Nrorvem/agent-distribution-gateway",
     "source": "github"
   },
-  "version": "0.3.0",
+  "version": "0.4.0",
   "remotes": [
     {
       "type": "streamable-http",

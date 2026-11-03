@@ -14,6 +14,21 @@
 import { PERSON_ENRICH_JSON_SCHEMA } from "../verticals/option-a-apollo/schema.ts";
 import { signPersonalMessage } from "./eip3009-signer.ts";
 
+export interface PaidResourceSpec {
+  /** USD price as a decimal string, e.g. "0.02". */
+  priceUsd: string;
+  /** Per-resource `extensions.bazaar` block. Omit to keep the legacy person-enrich block. */
+  bazaar?: Record<string, unknown>;
+  /** Overrides the challenge `error` text (billing-policy wording). */
+  challengeMessage?: string;
+}
+
+export function usdToAtomicUnits(priceUsd: string): string {
+  // String-based to avoid float drift; USDC has 6 decimals.
+  const [whole, frac = ""] = priceUsd.trim().split(".");
+  return (BigInt(whole || "0") * 1_000_000n + BigInt((frac + "000000").slice(0, 6))).toString();
+}
+
 export interface X402PaymentRequirement {
   scheme: "exact";
   network: "eip155:8453" | "eip155:84532" | "base" | "base-sepolia";
@@ -170,6 +185,7 @@ const globalState = globalThis as unknown as {
   __x402AuditLogs?: AuditLogEntry[];
   __x402RedeemedTxHashes?: Set<string>;
   __x402InFlightTxHashes?: Set<string>;
+  __x402PaymentAuthorizations?: Map<string, { status: "in_flight" | "consumed"; validBefore?: number }>;
 };
 
 if (!globalState.__x402RedeemedTxHashes) {
@@ -177,6 +193,99 @@ if (!globalState.__x402RedeemedTxHashes) {
 }
 if (!globalState.__x402InFlightTxHashes) {
   globalState.__x402InFlightTxHashes = new Set<string>();
+}
+if (!globalState.__x402PaymentAuthorizations) {
+  globalState.__x402PaymentAuthorizations = new Map();
+}
+
+/**
+ * Checks whether an EIP-3009 payment authorization has already been used or is currently in flight.
+ * Purges expired authorizations whose validBefore timestamp has passed.
+ */
+export function checkPaymentAuthorizationLock(
+  from: string,
+  nonce: string
+): { allowed: boolean; error?: string; key: string } {
+  const key = `${from.toLowerCase()}:${nonce.toLowerCase()}`;
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  if (!globalState.__x402PaymentAuthorizations) {
+    globalState.__x402PaymentAuthorizations = new Map();
+  }
+
+  // Purge expired entries
+  for (const [k, v] of globalState.__x402PaymentAuthorizations.entries()) {
+    if (v.validBefore && v.validBefore < nowSec) {
+      globalState.__x402PaymentAuthorizations.delete(k);
+    }
+  }
+
+  const existing = globalState.__x402PaymentAuthorizations.get(key);
+  if (existing) {
+    return {
+      allowed: false,
+      error: "Payment authorization already used",
+      key,
+    };
+  }
+
+  return { allowed: true, key };
+}
+
+/**
+ * Locks an EIP-3009 payment authorization as in_flight.
+ */
+export function lockPaymentAuthorization(
+  from: string,
+  nonce: string,
+  validBefore?: number
+): { allowed: boolean; error?: string; key: string } {
+  const check = checkPaymentAuthorizationLock(from, nonce);
+  if (!check.allowed) return check;
+
+  globalState.__x402PaymentAuthorizations!.set(check.key, {
+    status: "in_flight",
+    validBefore,
+  });
+
+  return { allowed: true, key: check.key };
+}
+
+/**
+ * Marks an in-flight authorization as permanently consumed (e.g. after settlement or miss).
+ */
+export function markPaymentAuthorizationConsumed(key?: string): void {
+  if (!key || !globalState.__x402PaymentAuthorizations) return;
+  const existing = globalState.__x402PaymentAuthorizations.get(key);
+  if (existing) {
+    existing.status = "consumed";
+  } else {
+    globalState.__x402PaymentAuthorizations.set(key, { status: "consumed" });
+  }
+}
+
+/**
+ * Releases a payment authorization lock if verification failed before execution.
+ */
+export function releasePaymentAuthorization(key?: string): void {
+  if (!key || !globalState.__x402PaymentAuthorizations) return;
+  globalState.__x402PaymentAuthorizations.delete(key);
+}
+
+/**
+ * Guard against settling mock data in production (Defense-in-Depth B1 / F1).
+ * Returns true if the output has source: "apollo_mock" and running in production.
+ */
+export function isMockOutputBlockedInProduction(output: unknown): boolean {
+  const isMock = Boolean(
+    output &&
+      typeof output === "object" &&
+      (output as any).source === "apollo_mock"
+  );
+  const isProd =
+    process.env.VERCEL_ENV === "production" ||
+    process.env.NODE_ENV === "production";
+  return isMock && isProd;
 }
 
 function getAuditLogFilePath(): string {
@@ -530,15 +639,111 @@ const BAZAAR_COMPACT_OUTPUT_EXAMPLE_SCHEMA = {
   },
 };
 
+export const DEFAULT_CHALLENGE_MESSAGE =
+  "Payment Required. Attach a signed x402 USDC payment payload in the PAYMENT-SIGNATURE (or X-PAYMENT) header. Free-on-Miss: your payment is ONLY settled on-chain if a verified person profile with a deliverable email is found ($0.00 charged on misses).";
+
+export const PERSON_ENRICH_BAZAAR_EXTENSION = {
+  info: {
+    input: {
+      type: "http",
+      method: "POST",
+      bodyType: "json",
+      discoverable: true,
+      body: {
+        first_name: "Fidji",
+        last_name: "Simo",
+        domain: "instacart.com",
+      },
+    },
+    output: {
+      type: "json",
+      example: {
+        matched: true,
+        payment_settled: true,
+        timestamp: "2026-10-17T23:00:39.000Z",
+        latency_ms: 420,
+        source: "apollo_live",
+        person: {
+          apollo_id: "64a1b2c3d4e5f60001234567",
+          full_name: "Fidji Simo",
+          title: "CEO & Chair",
+          seniority: "c_suite",
+          departments: ["c_suite"],
+          email: "fidji@instacart.com",
+          email_status: "verified",
+          linkedin_url: "https://www.linkedin.com/in/fidjisimo",
+          location: {
+            city: "San Francisco",
+            state: "California",
+            country: "United States",
+          },
+          organization: {
+            id: "5f1a2b3c4d5e6f0001112222",
+            name: "Instacart",
+            website_url: "https://www.instacart.com",
+            primary_domain: "instacart.com",
+            industry: "information technology & services",
+            estimated_num_employees: 3000,
+            linkedin_url: "https://www.linkedin.com/company/instacart",
+            founded_year: 2012,
+          },
+          employment_history: [
+            {
+              title: "CEO & Chair",
+              organization_name: "Instacart",
+              start_date: "2021-08-01",
+              end_date: "present",
+              current: true,
+            },
+          ],
+        },
+      },
+    },
+  },
+  schema: {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    type: "object",
+    required: ["input", "output"],
+    properties: {
+      input: {
+        type: "object",
+        required: ["type", "method", "bodyType", "body"],
+        properties: {
+          type: { type: "string", const: "http" },
+          method: { type: "string", enum: ["POST"] },
+          bodyType: { type: "string", enum: ["json"] },
+          discoverable: { type: "boolean" },
+          body: BAZAAR_COMPACT_INPUT_BODY_SCHEMA,
+        },
+      },
+      output: {
+        type: "object",
+        required: ["type", "example"],
+        properties: {
+          type: { type: "string", const: "json" },
+          example: BAZAAR_COMPACT_OUTPUT_EXAMPLE_SCHEMA,
+        },
+      },
+    },
+  },
+};
+
 /**
  * Generates the standard x402 v2 HTTP 402 Payment Required challenge payload.
  */
-export function buildX402Challenge(resourceUrl: string, description: string): X402ChallengePayload {
+export function buildX402Challenge(
+  resourceUrl: string,
+  description: string,
+  spec?: PaidResourceSpec
+): X402ChallengePayload {
   const cfg = getGateConfig();
+  const amount = spec ? usdToAtomicUnits(spec.priceUsd) : cfg.atomicUnits;
+  const error = spec?.challengeMessage ?? DEFAULT_CHALLENGE_MESSAGE;
+  const bazaar = spec?.bazaar ?? PERSON_ENRICH_BAZAAR_EXTENSION;
+
   return {
     x402Version: 2,
-    error:
-      "Payment Required. Attach a signed x402 USDC payment payload in the PAYMENT-SIGNATURE (or X-PAYMENT) header. Free-on-Miss: your payment is ONLY settled on-chain if a verified person profile with a deliverable email is found ($0.00 charged on misses).",
+    error,
     resource: {
       url: resourceUrl,
       description,
@@ -548,7 +753,7 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
       {
         scheme: "exact",
         network: cfg.networkCaip2,
-        amount: cfg.atomicUnits,
+        amount,
         asset: cfg.asset,
         payTo: cfg.payTo,
         maxTimeoutSeconds: 60,
@@ -559,91 +764,7 @@ export function buildX402Challenge(resourceUrl: string, description: string): X4
       },
     ],
     extensions: {
-      bazaar: {
-        info: {
-          input: {
-            type: "http",
-            method: "POST",
-            bodyType: "json",
-            discoverable: true,
-            body: {
-              first_name: "Fidji",
-              last_name: "Simo",
-              domain: "instacart.com",
-            },
-          },
-          output: {
-            type: "json",
-            example: {
-              matched: true,
-              payment_settled: true,
-              timestamp: "2026-10-17T23:00:39.000Z",
-              latency_ms: 420,
-              source: "apollo_live",
-              person: {
-                apollo_id: "64a1b2c3d4e5f60001234567",
-                full_name: "Fidji Simo",
-                title: "CEO & Chair",
-                seniority: "c_suite",
-                departments: ["c_suite"],
-                email: "fidji@instacart.com",
-                email_status: "verified",
-                linkedin_url: "https://www.linkedin.com/in/fidjisimo",
-                location: {
-                  city: "San Francisco",
-                  state: "California",
-                  country: "United States",
-                },
-                organization: {
-                  id: "5f1a2b3c4d5e6f0001112222",
-                  name: "Instacart",
-                  website_url: "https://www.instacart.com",
-                  primary_domain: "instacart.com",
-                  industry: "information technology & services",
-                  estimated_num_employees: 3000,
-                  linkedin_url: "https://www.linkedin.com/company/instacart",
-                  founded_year: 2012,
-                },
-                employment_history: [
-                  {
-                    title: "CEO & Chair",
-                    organization_name: "Instacart",
-                    start_date: "2021-08-01",
-                    end_date: "present",
-                    current: true,
-                  },
-                ],
-              },
-            },
-          },
-        },
-        schema: {
-          $schema: "https://json-schema.org/draft/2020-12/schema",
-          type: "object",
-          required: ["input", "output"],
-          properties: {
-            input: {
-              type: "object",
-              required: ["type", "method", "bodyType", "body"],
-              properties: {
-                type: { type: "string", const: "http" },
-                method: { type: "string", enum: ["POST"] },
-                bodyType: { type: "string", enum: ["json"] },
-                discoverable: { type: "boolean" },
-                body: BAZAAR_COMPACT_INPUT_BODY_SCHEMA,
-              },
-            },
-            output: {
-              type: "object",
-              required: ["type", "example"],
-              properties: {
-                type: { type: "string", const: "json" },
-                example: BAZAAR_COMPACT_OUTPUT_EXAMPLE_SCHEMA,
-              },
-            },
-          },
-        },
-      },
+      bazaar: bazaar as any,
     },
   };
 }
@@ -829,6 +950,7 @@ export interface X402PendingSettlementContext {
   activeFacilitatorUrl: string;
   facilitatorRequestBody: Record<string, any>;
   payer?: string;
+  authKey?: string;
 }
 
 /**
@@ -845,7 +967,7 @@ export async function verifyX402Payment(
   paymentHeader: string | null,
   resourceUrl: string,
   description: string,
-  options?: { verifyOnly?: boolean }
+  options?: { verifyOnly?: boolean; spec?: PaidResourceSpec }
 ): Promise<{
   verified: boolean;
   settled?: boolean;
@@ -854,6 +976,7 @@ export async function verifyX402Payment(
   facilitator?: string;
   txHash?: string;
   error?: string;
+  authKey?: string;
   settlementContext?: X402PendingSettlementContext;
 }> {
   if (!paymentHeader || !paymentHeader.trim()) {
@@ -917,7 +1040,7 @@ export async function verifyX402Payment(
   }
 
   // 3. Verify (and optionally settle) EIP-3009 off-chain signature against the x402 Facilitator (Path B)
-  const challenge = buildX402Challenge(resourceUrl, description);
+  const challenge = buildX402Challenge(resourceUrl, description, options?.spec);
   const v2Requirement = challenge.accepts[0];
 
   let paymentPayload: Record<string, any> | undefined;
@@ -938,13 +1061,30 @@ export async function verifyX402Payment(
     };
   }
 
+  const authFrom = paymentPayload?.payload?.authorization?.from;
+  const authNonce = paymentPayload?.payload?.authorization?.nonce;
+  const authValidBefore = paymentPayload?.payload?.authorization?.validBefore
+    ? Number(paymentPayload.payload.authorization.validBefore)
+    : undefined;
+
+  // F7: Pre-check payment authorization lock before making facilitator calls to avoid burning rate limits on replays
+  if (authFrom && authNonce) {
+    const preCheck = checkPaymentAuthorizationLock(authFrom, authNonce);
+    if (!preCheck.allowed) {
+      return {
+        verified: false,
+        error: "Payment authorization already used",
+      };
+    }
+  }
+
   const payloadVersion = Number(paymentPayload?.x402Version) === 1 ? 1 : 2;
   const paymentRequirements =
     payloadVersion === 1
       ? {
           scheme: "exact",
           network: cfg.network,
-          maxAmountRequired: cfg.atomicUnits,
+          maxAmountRequired: options?.spec ? usdToAtomicUnits(options.spec.priceUsd) : cfg.atomicUnits,
           resource: resourceUrl,
           description,
           mimeType: "application/json",
@@ -1055,13 +1195,26 @@ export async function verifyX402Payment(
 
     const verifiedPayer =
       verifyJson.payer ||
-      paymentPayload?.payload?.authorization?.from ||
+      authFrom ||
       "0xVerifiedAgentWallet";
+
+    let authKey: string | undefined;
+    if (authFrom && authNonce) {
+      const lockRes = lockPaymentAuthorization(authFrom, authNonce, authValidBefore);
+      if (!lockRes.allowed) {
+        return {
+          verified: false,
+          error: "Payment authorization already used",
+        };
+      }
+      authKey = lockRes.key;
+    }
 
     const settlementContext: X402PendingSettlementContext = {
       activeFacilitatorUrl,
       facilitatorRequestBody,
       payer: verifiedPayer,
+      authKey,
     };
 
     // If running in 2-Phase "Free-on-Miss" mode, return verified status now without settling on-chain yet.
@@ -1072,6 +1225,7 @@ export async function verifyX402Payment(
         payer: verifiedPayer,
         mode: "facilitator_onchain",
         facilitator: activeFacilitatorUrl,
+        authKey,
         settlementContext,
       };
     }
@@ -1171,6 +1325,7 @@ export async function settleVerifiedX402Payment(
     };
 
     if (settleJson.success === false) {
+      if (context.authKey) markPaymentAuthorizationConsumed(context.authKey);
       return {
         verified: false,
         settled: false,
@@ -1186,6 +1341,7 @@ export async function settleVerifiedX402Payment(
     const settledTxHash =
       settleJson.transaction || settleJson.txHash || settleJson.tx_hash;
     if (!settledTxHash) {
+      if (context.authKey) markPaymentAuthorizationConsumed(context.authKey);
       return {
         verified: false,
         settled: false,
@@ -1196,6 +1352,7 @@ export async function settleVerifiedX402Payment(
     }
 
     globalState.__x402RedeemedTxHashes!.add(settledTxHash.toLowerCase());
+    if (context.authKey) markPaymentAuthorizationConsumed(context.authKey);
 
     return {
       verified: true,
@@ -1206,6 +1363,7 @@ export async function settleVerifiedX402Payment(
       txHash: settledTxHash,
     };
   } catch (err: any) {
+    if (context.authKey) markPaymentAuthorizationConsumed(context.authKey);
     return {
       verified: false,
       settled: false,

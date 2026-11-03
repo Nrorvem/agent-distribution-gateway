@@ -1,11 +1,13 @@
 runtime: "container"
 type: "http"
 endpoint: "/api/mcp"
-name: "apollo-b2b-person-enrichment-x402"
-title: "Apollo.io B2B Person Enrichment & Work Email Finder (x402)"
-description: "Zero-signup B2B Person Enrichment, Work Email Lookup & LinkedIn-to-Email Resolver powered by Apollo.io. Pay per match ($0.03 USDC on Base via x402 — Free-on-Miss) with no API key or subscription required."
+name: "apollo-b2b-full-funnel-gateway-x402"
+title: "Apollo.io Full-Funnel B2B Data Gateway (x402)"
+description: "Zero-signup Full-Funnel B2B Data Suite: Company Search, People Search, Person Enrichment, Organization Firmographics & Bulk Operations powered by Apollo.io on Base via x402 v2 (Free-on-Miss)."
 tags:
   - b2b-enrichment
+  - company-search
+  - people-search
   - email-finder
   - linkedin-to-email
   - sales-intelligence

@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getGateConfig, resolveGatewayOrigin } from "@/lib/x402-gate";
 import { PERSON_ENRICH_JSON_SCHEMA } from "@/verticals/option-a-apollo/schema";
+import { APOLLO_PRODUCTS } from "@/verticals/option-a-apollo/catalog";
+
+function toCamelCase(str: string): string {
+  return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+}
 
 /**
  * GET /openapi.json
@@ -12,34 +17,12 @@ export async function GET(req: NextRequest) {
   const cfg = getGateConfig(origin);
   const fixedUsdAmount = Number(cfg.priceUsd).toFixed(6);
 
-  const openApiSpec = {
-    openapi: "3.1.0",
-    "x-agentcash-owner": cfg.payTo,
-    "x-discovery": {
-      ownershipProofs: cfg.ownershipProofs,
-    },
-    "x-agentcash-provenance": {
-      ownershipProofs: cfg.ownershipProofs,
-    },
-    info: {
-      title: "Apollo.io B2B Person Enrichment & Verified Work Email Finder",
-      version: "1.1.0",
-      description:
-        `Zero-signup, pay-per-match B2B Person Enrichment, Executive Work Email Finder, and LinkedIn-to-Email Resolver powered by Apollo.io. Only $${cfg.priceUsd} USDC on Base Mainnet via x402 v2 — Free-on-Miss ($0.00 charged if no deliverable email is found).`,
-      contact: {
-        email: "info@nrorvem.com",
-      },
-      "x-guidance":
-        `Use POST /api/v1/enrich/person to enrich a B2B professional profile and resolve their verified work email, job title, seniority, LinkedIn URL, and current employer via Apollo.io. Accepts flexible partial identifiers—provide any of: (1) linkedin_url (or linkedin), (2) email, (3) name (or first_name + last_name) with company/organization_name or domain (supports fuzzy company names like 'Meta' or 'Google' as well as domains like 'instacart.com'), or (4) Apollo person id. Free-on-Miss guarantee: payment ($${cfg.priceUsd} USDC on Base Mainnet eip155:8453) is verified first and ONLY settled on-chain when a verified person profile with a deliverable email is returned ($0.00 charged on misses). Calls without payment return an HTTP 402 x402 v2 challenge in the PAYMENT-REQUIRED header and JSON body. Retry with your signed x402 payload in PAYMENT-SIGNATURE (or X-PAYMENT).`,
-    },
-    servers: [
-      {
-        url: origin,
-        description: "EnrichMatch B2B Enrichment Gateway",
-      },
-    ],
-    paths: {
-      "/api/v1/enrich/person": {
+  const paths: Record<string, any> = {};
+
+  for (const product of APOLLO_PRODUCTS) {
+    if (product.id === "enrich_person") {
+      // Keep exact legacy specification for live verified endpoint
+      paths["/api/v1/enrich/person"] = {
         post: {
           operationId: "enrichPerson",
           summary: "Enrich B2B person profile and find verified work email via Apollo.io ($0.03 USDC — Free on Miss)",
@@ -114,10 +97,100 @@ export async function GET(req: NextRequest) {
             "402": {
               description: "Payment Required",
             },
+            "422": {
+              description: "Invalid input parameters",
+            },
+          },
+        },
+      };
+      continue;
+    }
+
+    const unitPrice = product.pricing.unitUsd();
+    const formattedPrice = Number(unitPrice).toFixed(6);
+
+    paths[product.path] = {
+      post: {
+        operationId: toCamelCase(product.id),
+        summary: `${product.title} ($${unitPrice} USDC / ${product.pricing.per} — Free on Miss)`,
+        description: product.description,
+        tags: product.tags,
+        "x-payment-info": {
+          price:
+            product.funnelStage === "bulk_enrich"
+              ? {
+                  mode: "dynamic",
+                  currency: "USD",
+                  min: Number(unitPrice).toFixed(6),
+                  max: (Number(unitPrice) * (product.pricing.maxUnits || 10)).toFixed(6),
+                }
+              : {
+                  mode: "fixed",
+                  currency: "USD",
+                  amount: formattedPrice,
+                },
+          freeOnMiss: true,
+          protocols: [{ x402: {} }],
+          ...(product.funnelStage === "bulk_enrich"
+            ? { "x-pricing-note": product.pricing.billingRule }
+            : {}),
+        },
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: product.inputSchema,
+              example: product.exampleInput,
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: `Successful execution (${product.pricing.billingRule})`,
+            content: {
+              "application/json": {
+                schema: product.outputSchema,
+              },
+            },
+          },
+          "402": {
+            description: "Payment Required (x402 challenge)",
+          },
+          "422": {
+            description: "Invalid input parameters",
           },
         },
       },
+    };
+  }
+
+  const openApiSpec = {
+    openapi: "3.1.0",
+    "x-agentcash-owner": cfg.payTo,
+    "x-discovery": {
+      ownershipProofs: cfg.ownershipProofs,
     },
+    "x-agentcash-provenance": {
+      ownershipProofs: cfg.ownershipProofs,
+    },
+    info: {
+      title: "Apollo.io B2B Data API — People & Company Search, Person & Organization Enrichment, Bulk Enrichment (x402)",
+      version: "1.2.0",
+      description:
+        `Zero-signup, pay-per-call B2B data API powered by Apollo.io on Base Mainnet via x402 v2. Full-funnel intelligence: Search Organizations ($0.02) -> Search People ($0.01) -> Enrich Person ($0.03) / Bulk Enrich People ($0.025/ea); Enrich Organization ($0.02) / Bulk Enrich Organizations ($0.015/ea). Free-on-Miss: $0.00 charged if no deliverable match is found.`,
+      contact: {
+        email: "info@nrorvem.com",
+      },
+      "x-guidance":
+        `Full-Funnel B2B Workflow for AI Agents: (1) Use POST /api/v1/search/organizations to discover target companies by keywords, industry, or employee count. (2) Use POST /api/v1/search/people with target domains or organization IDs to find relevant decision makers (0 credits upstream). (3) Use POST /api/v1/enrich/person or /api/v1/enrich/people/bulk with person IDs, LinkedIn URLs, or names + domains to resolve verified deliverable work emails. (4) Use POST /api/v1/enrich/organization to fetch complete firmographics, funding history, and tech stacks. Free-on-Miss guarantee: payments are verified first and ONLY settled on-chain when verified deliverable data is returned ($0.00 charged on misses). Unauthenticated calls return HTTP 402 with PAYMENT-REQUIRED header.`,
+    },
+    servers: [
+      {
+        url: origin,
+        description: "EnrichMatch Full-Funnel B2B Gateway",
+      },
+    ],
+    paths,
   };
 
   return NextResponse.json(openApiSpec, {

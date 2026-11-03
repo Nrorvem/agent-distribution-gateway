@@ -2,7 +2,59 @@
 
 import React, { useState } from "react";
 
+const PRODUCTS_TABLE = [
+  {
+    id: "search_organizations",
+    name: "Organization Search",
+    path: "/api/v1/search/organizations",
+    stage: "Search",
+    price: "$0.02 / page",
+    billingRule: "Settled if ≥ 1 company found ($0.00 on miss)",
+  },
+  {
+    id: "search_people",
+    name: "People Search",
+    path: "/api/v1/search/people",
+    stage: "Search",
+    price: "$0.01 / page",
+    billingRule: "Settled if ≥ 1 person found (0 credits upstream)",
+  },
+  {
+    id: "enrich_person",
+    name: "Person Enrich",
+    path: "/api/v1/enrich/person",
+    stage: "Enrich",
+    price: "$0.03 / call",
+    billingRule: "Settled if deliverable email found ($0.00 on miss)",
+  },
+  {
+    id: "enrich_organization",
+    name: "Organization Enrich",
+    path: "/api/v1/enrich/organization",
+    stage: "Enrich",
+    price: "$0.02 / call",
+    billingRule: "Settled if company resolved ($0.00 on miss)",
+  },
+  {
+    id: "bulk_enrich_people",
+    name: "Bulk People Enrich",
+    path: "/api/v1/enrich/people/bulk",
+    stage: "Bulk",
+    price: "$0.025 / record",
+    billingRule: "Settled if ≥ 1 deliverable email found (≤ 10 profiles)",
+  },
+  {
+    id: "bulk_enrich_organizations",
+    name: "Bulk Org Enrich",
+    path: "/api/v1/enrich/organizations/bulk",
+    stage: "Bulk",
+    price: "$0.015 / domain",
+    billingRule: "Settled if ≥ 1 company found (≤ 10 domains)",
+  },
+];
+
 export default function GatewayDashboard() {
+  const [selectedEndpoint, setSelectedEndpoint] = useState("/api/v1/enrich/person");
   const [firstName, setFirstName] = useState("Tim");
   const [lastName, setLastName] = useState("Zheng");
   const [domain, setDomain] = useState("apollo.io");
@@ -23,14 +75,25 @@ export default function GatewayDashboard() {
         headers["X-PAYMENT"] = "dev_test_payment_proof_2026";
       }
 
-      const res = await fetch("/api/v1/enrich/person", {
+      let reqBody: unknown = {};
+      if (selectedEndpoint === "/api/v1/enrich/person") {
+        reqBody = { first_name: firstName, last_name: lastName, domain };
+      } else if (selectedEndpoint === "/api/v1/search/people") {
+        reqBody = { organization_domains: [domain], person_titles: ["CEO", "Founder"] };
+      } else if (selectedEndpoint === "/api/v1/search/organizations") {
+        reqBody = { organization_name: "Apollo", per_page: 2 };
+      } else if (selectedEndpoint === "/api/v1/enrich/organization") {
+        reqBody = { domain };
+      } else if (selectedEndpoint === "/api/v1/enrich/people/bulk") {
+        reqBody = { details: [{ first_name: firstName, last_name: lastName, domain }] };
+      } else if (selectedEndpoint === "/api/v1/enrich/organizations/bulk") {
+        reqBody = { domains: [domain, "stripe.com"] };
+      }
+
+      const res = await fetch(selectedEndpoint, {
         method: "POST",
         headers,
-        body: JSON.stringify({
-          first_name: firstName,
-          last_name: lastName,
-          domain,
-        }),
+        body: JSON.stringify(reqBody),
       });
 
       setStatusCode(res.status);
@@ -44,7 +107,7 @@ export default function GatewayDashboard() {
   }
 
   return (
-    <main style={{ maxWidth: 1040, margin: "0 auto", padding: "40px 24px" }}>
+    <main style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 24px" }}>
       <header style={{ marginBottom: 32, borderBottom: "1px solid #1e293b", paddingBottom: 24 }}>
         <div
           style={{
@@ -58,46 +121,32 @@ export default function GatewayDashboard() {
             marginBottom: 12,
           }}
         >
-          ZERO-SIGNUP B2B INTELLIGENCE • x402 v2 & MCP LIVE
+          ZERO-SIGNUP FULL-FUNNEL B2B DATA • x402 v2 & MCP LIVE
         </div>
         <h1 style={{ margin: "0 0 8px 0", fontSize: 28, color: "#f8fafc" }}>
-          Apollo.io B2B Person Enrichment & Verified Work Email Finder
+          Apollo.io Full-Funnel B2B Intelligence Gateway
         </h1>
         <p style={{ margin: 0, color: "#94a3b8", lineHeight: 1.5 }}>
-          Unbundling annual B2B data subscriptions into zero-signup, pay-per-match (`$0.03 USDC` on Base — Free-on-Miss)
-          endpoints for autonomous AI agents.
+          Unbundling annual B2B data subscriptions into zero-signup, pay-per-call (Search → Enrich → Settle on Base USDC)
+          endpoints for autonomous AI agents. Free-on-Miss: $0.00 charged if no deliverable result is returned.
         </p>
       </header>
 
+      {/* Discovery Links */}
       <section
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
           gap: 16,
           marginBottom: 32,
         }}
       >
         {[
-          {
-            label: "A2A Agent Card",
-            path: "/.well-known/agent.json",
-            desc: "Machine discovery & SLA telemetry",
-          },
-          {
-            label: "LLM Manifest",
-            path: "/llms.txt",
-            desc: "Markdown instructions for web agents",
-          },
-          {
-            label: "MCP Server",
-            path: "/api/mcp",
-            desc: "JSON-RPC 2.0 Streamable HTTP + paidTool",
-          },
-          {
-            label: "REST x402 Endpoint",
-            path: "/api/v1/enrich/person",
-            desc: "HTTP 402 challenge & USDC settlement",
-          },
+          { label: "Product Catalog", path: "/api/v1/catalog", desc: "Full-funnel menu & chaining workflow" },
+          { label: "A2A Agent Card", path: "/.well-known/agent.json", desc: "Machine discovery & SLA telemetry" },
+          { label: "x402 Manifest", path: "/.well-known/x402", desc: "Standard x402 resource discovery" },
+          { label: "MCP Server", path: "/api/mcp", desc: "JSON-RPC 2.0 Streamable HTTP tools" },
+          { label: "OpenAPI 3.1.0", path: "/openapi.json", desc: "Schema contracts & x-payment-info" },
         ].map((ep) => (
           <a
             key={ep.path}
@@ -117,23 +166,84 @@ export default function GatewayDashboard() {
             <div style={{ fontSize: 13, color: "#60a5fa", fontWeight: 600 }}>
               {ep.label} ↗
             </div>
-            <code
-              style={{
-                display: "block",
-                marginTop: 6,
-                fontSize: 13,
-                color: "#f1f5f9",
-              }}
-            >
+            <code style={{ display: "block", marginTop: 6, fontSize: 12, color: "#f1f5f9" }}>
               {ep.path}
             </code>
-            <div style={{ marginTop: 6, fontSize: 12, color: "#64748b" }}>
+            <div style={{ marginTop: 6, fontSize: 11, color: "#64748b" }}>
               {ep.desc}
             </div>
           </a>
         ))}
       </section>
 
+      {/* Full-Funnel Products Table */}
+      <section
+        style={{
+          marginBottom: 32,
+          backgroundColor: "#111827",
+          border: "1px solid #1f2937",
+          borderRadius: 12,
+          padding: 24,
+        }}
+      >
+        <h2 style={{ marginTop: 0, fontSize: 18, color: "#f8fafc" }}>
+          Full-Funnel Products (Search → Enrich)
+        </h2>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 12, fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid #334155", textAlign: "left", color: "#94a3b8" }}>
+                <th style={{ padding: "8px 12px" }}>Stage</th>
+                <th style={{ padding: "8px 12px" }}>Product</th>
+                <th style={{ padding: "8px 12px" }}>Endpoint</th>
+                <th style={{ padding: "8px 12px" }}>Price</th>
+                <th style={{ padding: "8px 12px" }}>Billing Guarantee</th>
+              </tr>
+            </thead>
+            <tbody>
+              {PRODUCTS_TABLE.map((p) => (
+                <tr
+                  key={p.id}
+                  style={{
+                    borderBottom: "1px solid #1e293b",
+                    backgroundColor: selectedEndpoint === p.path ? "#1e293b" : "transparent",
+                    cursor: "pointer",
+                  }}
+                  onClick={() => setSelectedEndpoint(p.path)}
+                >
+                  <td style={{ padding: "10px 12px" }}>
+                    <span
+                      style={{
+                        padding: "2px 6px",
+                        borderRadius: 4,
+                        fontSize: 11,
+                        backgroundColor: p.stage === "Search" ? "#065f46" : p.stage === "Enrich" ? "#1e3a8a" : "#6b21a8",
+                        color: "#f8fafc",
+                      }}
+                    >
+                      {p.stage}
+                    </span>
+                  </td>
+                  <td style={{ padding: "10px 12px", fontWeight: 600, color: "#f8fafc" }}>
+                    {p.name}
+                  </td>
+                  <td style={{ padding: "10px 12px" }}>
+                    <code style={{ color: "#38bdf8" }}>{p.path}</code>
+                  </td>
+                  <td style={{ padding: "10px 12px", color: "#34d399", fontWeight: 600 }}>
+                    {p.price}
+                  </td>
+                  <td style={{ padding: "10px 12px", color: "#94a3b8", fontSize: 12 }}>
+                    {p.billingRule}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* Interactive Simulator */}
       <section
         style={{
           display: "grid",
@@ -150,10 +260,33 @@ export default function GatewayDashboard() {
             Interactive Buyer Agent Simulator
           </h2>
           <p style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.5 }}>
-            Test how an autonomous agent interacts with <code>POST /api/v1/enrich/person</code> with and without an <code>X-PAYMENT</code> header.
+            Simulate how an autonomous agent interacts with paid gateway endpoints with and without an <code>X-PAYMENT</code> header.
           </p>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 16 }}>
+            <label style={{ fontSize: 13 }}>
+              Target Endpoint
+              <select
+                value={selectedEndpoint}
+                onChange={(e) => setSelectedEndpoint(e.target.value)}
+                style={{
+                  width: "100%",
+                  marginTop: 4,
+                  padding: "8px 10px",
+                  borderRadius: 6,
+                  border: "1px solid #334155",
+                  backgroundColor: "#0f172a",
+                  color: "#f8fafc",
+                }}
+              >
+                {PRODUCTS_TABLE.map((p) => (
+                  <option key={p.id} value={p.path}>
+                    {p.name} ({p.path})
+                  </option>
+                ))}
+              </select>
+            </label>
+
             <label style={{ fontSize: 13 }}>
               First Name
               <input
@@ -218,7 +351,7 @@ export default function GatewayDashboard() {
                 checked={attachPayment}
                 onChange={(e) => setAttachPayment(e.target.checked)}
               />
-              Attach signed <code>X-PAYMENT</code> proof ($0.03 USDC — Free on Miss)
+              Attach signed <code>X-PAYMENT</code> proof (Free on Miss)
             </label>
 
             <button
@@ -291,7 +424,7 @@ export default function GatewayDashboard() {
               fontSize: 12,
               lineHeight: 1.45,
               overflowX: "auto",
-              maxHeight: 420,
+              maxHeight: 480,
               color: "#e2e8f0",
             }}
           >

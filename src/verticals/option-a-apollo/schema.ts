@@ -6,6 +6,9 @@
  * exposed via MCP, REST x402, and /.well-known/agent.json.
  */
 
+export const PERSON_ROUTE_DESCRIPTION =
+  "Apollo.io Verified B2B Person Enrichment & Work Email Finder ($0.03 USDC on Match — Free on Miss)";
+
 export interface PersonEnrichInput {
   /** Unique Apollo person ID (if known) */
   id?: string;
@@ -190,7 +193,7 @@ export const KNOWN_COMPANY_BRAND_MAP: Record<
   },
 };
 
-const FREE_EMAIL_PROVIDERS = new Set([
+export const FREE_EMAIL_PROVIDERS = new Set([
   "gmail.com",
   "googlemail.com",
   "yahoo.com",

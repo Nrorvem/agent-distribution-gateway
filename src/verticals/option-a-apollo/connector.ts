@@ -19,6 +19,7 @@ import {
   type PersonEnrichOutput,
   type EmploymentHistoryEntry,
 } from "./schema.ts";
+import { isApolloMockMode } from "./apollo-client.ts";
 
 const APOLLO_MATCH_ENDPOINT = "https://api.apollo.io/api/v1/people/match";
 const CLEARBIT_AUTOCOMPLETE_URL =
@@ -107,10 +108,7 @@ export async function enrichPersonWithApollo(
 ): Promise<PersonEnrichOutput> {
   const startTime = Date.now();
   const apiKey = process.env.APOLLO_API_KEY;
-  const mockMode =
-    process.env.APOLLO_MOCK_MODE === "true" ||
-    !apiKey ||
-    apiKey === "your_apollo_master_api_key_here";
+  const mockMode = isApolloMockMode();
 
   // If caller provided organization_name without domain, resolve canonical domain
   let resolvedDomain = input.domain;
@@ -123,6 +121,10 @@ export async function enrichPersonWithApollo(
       { ...input, domain: resolvedDomain || input.domain },
       startTime
     );
+  }
+
+  if (!apiKey) {
+    throw new Error("Missing APOLLO_API_KEY in environment");
   }
 
   // Construct payload with strict credit guardrails:
@@ -264,6 +266,20 @@ function buildMockEnrichment(
   input: PersonEnrichInput,
   startTime: number
 ): PersonEnrichOutput {
+  if (
+    input.domain === "nomatch.invalid" ||
+    input.email?.includes("nomatch.invalid") ||
+    input.first_name === "nomatch.invalid"
+  ) {
+    return {
+      matched: false,
+      timestamp: new Date().toISOString(),
+      latency_ms: Math.max(12, Date.now() - startTime),
+      source: "apollo_mock",
+      person: null,
+    };
+  }
+
   const firstName = input.first_name || (input.name ? input.name.split(" ")[0] : "Tim");
   const lastName =
     input.last_name || (input.name ? input.name.split(" ").slice(1).join(" ") : "Zheng");

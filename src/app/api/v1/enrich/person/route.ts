@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   validatePersonEnrichInput,
   PERSON_ENRICH_JSON_SCHEMA,
+  PERSON_ROUTE_DESCRIPTION,
 } from "@/verticals/option-a-apollo/schema";
 import { enrichPersonWithApollo } from "@/verticals/option-a-apollo/connector";
 import {
@@ -12,6 +13,8 @@ import {
   recordAuditLog,
   getGateConfig,
   resolveGatewayOrigin,
+  isMockOutputBlockedInProduction,
+  markPaymentAuthorizationConsumed,
 } from "@/lib/x402-gate";
 
 /**
@@ -50,7 +53,7 @@ export async function GET(req: NextRequest) {
     schema: PERSON_ENRICH_JSON_SCHEMA,
     x402_challenge_preview: buildX402Challenge(
       resourceUrl,
-      "Apollo.io Verified B2B Person Enrichment & Work Email Finder ($0.03 USDC on Match — Free on Miss)"
+      PERSON_ROUTE_DESCRIPTION
     ),
   });
 }
@@ -85,8 +88,7 @@ export async function POST(req: NextRequest) {
 
   const origin = resolveGatewayOrigin(req);
   const resourceUrl = `${origin}/api/v1/enrich/person`;
-  const description =
-    "Apollo.io Verified B2B Person Enrichment & Work Email Finder ($0.03 USDC on Match — Free on Miss)";
+  const description = PERSON_ROUTE_DESCRIPTION;
   const paymentHeader =
     req.headers.get("payment-signature") ||
     req.headers.get("PAYMENT-SIGNATURE") ||
@@ -150,6 +152,19 @@ export async function POST(req: NextRequest) {
     const enrichment = await enrichPersonWithApollo(validation.data);
     const cfg = getGateConfig();
 
+    // Guard against settling mock data in production (Defense-in-Depth B1 / F1)
+    if (isMockOutputBlockedInProduction(enrichment)) {
+      if (paymentVerifyResult.authKey) {
+        markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+      }
+      return NextResponse.json(
+        {
+          error: "Mock data cannot be settled in production.",
+        },
+        { status: 502 }
+      );
+    }
+
     const hasDeliverableEmail = Boolean(
       enrichment.matched &&
         enrichment.person?.email &&
@@ -160,6 +175,9 @@ export async function POST(req: NextRequest) {
     // Free-on-Miss: If Apollo could not resolve a verified match with a deliverable email,
     // skip `/settle` so the buyer agent's EIP-3009 authorization is never settled on-chain ($0.00 charged).
     if (!hasDeliverableEmail) {
+      if (paymentVerifyResult.authKey) {
+        markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+      }
       return NextResponse.json(
         {
           ...enrichment,
@@ -260,6 +278,9 @@ export async function POST(req: NextRequest) {
       }
     );
   } catch (err: any) {
+    if (paymentVerifyResult.authKey) {
+      markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+    }
     return NextResponse.json(
       {
         error: `Upstream supply error: ${err?.message || String(err)}`,

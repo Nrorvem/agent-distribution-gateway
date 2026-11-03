@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   validatePersonEnrichInput,
   PERSON_ENRICH_JSON_SCHEMA,
+  PERSON_ROUTE_DESCRIPTION,
 } from "@/verticals/option-a-apollo/schema";
 import { enrichPersonWithApollo } from "@/verticals/option-a-apollo/connector";
 import {
@@ -52,7 +53,7 @@ export async function GET(req: NextRequest) {
     schema: PERSON_ENRICH_JSON_SCHEMA,
     x402_challenge_preview: buildX402Challenge(
       resourceUrl,
-      "Apollo.io Verified B2B Person Enrichment & Work Email Finder ($0.03 USDC on Match — Free on Miss)"
+      PERSON_ROUTE_DESCRIPTION
     ),
   });
 }
@@ -87,8 +88,7 @@ export async function POST(req: NextRequest) {
 
   const origin = resolveGatewayOrigin(req);
   const resourceUrl = `${origin}/api/v1/enrich/person`;
-  const description =
-    "Apollo.io Verified B2B Person Enrichment & Work Email Finder ($0.03 USDC on Match — Free on Miss)";
+  const description = PERSON_ROUTE_DESCRIPTION;
   const paymentHeader =
     req.headers.get("payment-signature") ||
     req.headers.get("PAYMENT-SIGNATURE") ||

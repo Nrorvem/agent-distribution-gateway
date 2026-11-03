@@ -186,9 +186,8 @@ async function run() {
         const decodedJson = JSON.parse(Buffer.from(paymentReqHeader!, "base64").toString("utf-8"));
         assert(decodedJson.x402Version === 2, `Expected x402Version: 2, got ${decodedJson.x402Version}`);
 
-        const expectedAmount = product.funnelStage === "bulk_enrich"
-          ? (BigInt(usdToAtomicUnits(product.pricing.unitUsd())) * 10n).toString()
-          : usdToAtomicUnits(product.pricing.unitUsd());
+        // Empty-body probes quote the per-record price for bulk routes
+        const expectedAmount = usdToAtomicUnits(product.pricing.unitUsd());
 
         assert(
           decodedJson.accepts[0].amount === expectedAmount,

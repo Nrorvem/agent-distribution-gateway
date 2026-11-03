@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
     validate: validateBulkPersonInput,
     expectedSchema: product.inputSchema,
     spec: (input) => {
-      const count = input ? input.details.length : 10;
+      const count = input ? input.details.length : 1; // probes quote the per-record price
       return {
         priceUsd: totalPriceUsd("bulk_enrich_people", count),
         bazaar: product.bazaar(),

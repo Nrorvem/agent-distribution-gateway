@@ -14,6 +14,8 @@
  * S10: Free-on-Miss check (mock nomatch.invalid -> HTTP 200 with payment_settled: false and $0.00)
  * S11: B1 safety smoke -> invalid upstream key returns 502 with no settlement (run via --only S11)
  * S12: Nonce lock unit test -> rejects reused authorization
+ * S14: Parallel nonce lock race -> exactly one lock succeeds
+ * S15: Payload missing authorization nonce -> 402 before facilitator
  *
  * Usage:
  *   /opt/homebrew/bin/node --experimental-strip-types scripts/smoke-full-funnel.ts [--base http://localhost:3000] [--only <id>] [--unpaid-only]
@@ -133,6 +135,34 @@ async function run() {
       results.push({ id: "S14", name: "Parallel concurrent requests: exactly one lock succeeds, one rejected", passed: true });
     } catch (err: any) {
       results.push({ id: "S14", name: "Parallel concurrent requests: exactly one lock succeeds, one rejected", passed: false, error: err.message });
+    }
+  }
+
+  // --- S15: Path B payload without from/nonce is rejected before /verify (never processed unlocked) ---
+  if (shouldRun("S15")) {
+    try {
+      const noNonce = Buffer.from(
+        JSON.stringify({
+          x402Version: 2,
+          scheme: "exact",
+          network: "eip155:8453",
+          payload: { signature: "0x00", authorization: { from: "0x0000000000000000000000000000000000000001" } },
+        })
+      ).toString("base64");
+      const res = await fetch(`${baseUrl}/api/v1/enrich/person`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "PAYMENT-SIGNATURE": noNonce },
+        body: JSON.stringify({ linkedin_url: "https://www.linkedin.com/in/example" }),
+      });
+      const body: any = await res.json().catch(() => ({}));
+      assert(res.status === 402, `Expected 402, got ${res.status}`);
+      assert(
+        typeof body.error === "string" && body.error.startsWith("Malformed EIP-3009 authorization"),
+        `Expected malformed-authorization error, got ${JSON.stringify(body.error)}`
+      );
+      results.push({ id: "S15", name: "Payload missing authorization.nonce -> 402 before facilitator, no settlement", passed: true });
+    } catch (err: any) {
+      results.push({ id: "S15", name: "Payload missing authorization.nonce -> 402 before facilitator, no settlement", passed: false, error: err.message });
     }
   }
 

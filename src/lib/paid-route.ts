@@ -114,6 +114,12 @@ export async function handlePaidPost<TInput, TOutput>(
   );
 
   if (!paymentVerifyResult.verified) {
+    if (paymentVerifyResult.retryable) {
+      return NextResponse.json(
+        { error: paymentVerifyResult.error || "Payment lock unavailable, retry", retryable: true },
+        { status: 503, headers: { "Retry-After": "2", "Content-Type": "application/json" } }
+      );
+    }
     const challenge = {
       ...buildX402Challenge(resourceUrl, o.description, spec),
       error: paymentVerifyResult.error || "Payment verification failed",

@@ -108,6 +108,20 @@ export async function handlePaidMcpCall<TInput, TOutput>(
   );
 
   if (!verification.verified) {
+    if (verification.retryable) {
+      return NextResponse.json(
+        {
+          jsonrpc: "2.0",
+          id: o.id,
+          result: {
+            isError: true,
+            _meta: { retryable: true },
+            content: [{ type: "text", text: verification.error || "Payment lock unavailable, retry" }],
+          },
+        },
+        { status: 503, headers: { "Retry-After": "2" } }
+      );
+    }
     const challenge = {
       ...buildX402Challenge(resourceUrl, o.description, spec),
       error: verification.error || "Payment verification failed",

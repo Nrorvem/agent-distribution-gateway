@@ -862,6 +862,8 @@ export async function verifyX402Payment(
   txHash?: string;
   error?: string;
   authKey?: string;
+  /** True when the payment lock backend was unavailable; nothing was locked or settled, so the buyer may retry. */
+  retryable?: boolean;
   settlementContext?: X402PendingSettlementContext;
 }> {
   if (!paymentHeader || !paymentHeader.trim()) {
@@ -954,17 +956,23 @@ export async function verifyX402Payment(
 
   // F7: Atomically lock payment authorization upfront via Redis SET NX (Invariant #6)
   // Rejects duplicate/concurrent requests before hitting facilitator or upstream supply.
-  let authKey: string | undefined;
-  if (authFrom && authNonce) {
-    const lockRes = await lockPaymentAuthorization(authFrom, authNonce, authValidBefore);
-    if (!lockRes.allowed) {
-      return {
-        verified: false,
-        error: lockRes.error || "Payment authorization already used",
-      };
-    }
-    authKey = lockRes.key;
+  // Every Path B payload must carry an EIP-3009 authorization; never process one without a lock.
+  if (typeof authFrom !== "string" || !authFrom || typeof authNonce !== "string" || !authNonce) {
+    return {
+      verified: false,
+      error:
+        "Malformed EIP-3009 authorization: payload.authorization.from and payload.authorization.nonce are required.",
+    };
   }
+  const lockRes = await lockPaymentAuthorization(authFrom, authNonce, authValidBefore);
+  if (!lockRes.allowed) {
+    return {
+      verified: false,
+      error: lockRes.error || "Payment authorization already used",
+      ...(lockRes.unavailable ? { retryable: true } : {}),
+    };
+  }
+  const authKey: string | undefined = lockRes.key;
 
   const payloadVersion = Number(paymentPayload?.x402Version) === 1 ? 1 : 2;
   const paymentRequirements =

@@ -10,9 +10,15 @@
  * - `UPSTASH_REDIS_REST_TOKEN` or `KV_REST_API_TOKEN`
  *
  * Storage schema:
- * - `x402:auth:${from}:${nonce}` -> "in_flight" | "consumed" (TTL: validBefore - now)
- * - `x402:settlements` -> Redis LIST of serialized AuditLogEntry (capped at 50 with LTRIM)
- * - `x402:redeemed_tx_hashes` -> Redis SET of lowercase tx hashes
+ * - `x402:auth:${from}:${nonce}` -> "in_flight" | "consumed" (TTL: validBefore - now).
+ *   NOT environment-scoped: an EIP-3009 nonce is single-use on-chain across every environment.
+ * - `x402:${env}:settlements` -> Redis LIST of serialized AuditLogEntry (capped at 50 with LTRIM)
+ * - `x402:${env}:redeemed_tx_hashes` -> Redis SET of lowercase tx hashes
+ *   where `env` = `VERCEL_ENV` (production | preview | development) or "local" outside Vercel, so a
+ *   laptop or preview sharing the production database can never write into production telemetry.
+ *
+ * Fail-closed: when Redis is configured and `VERCEL_ENV === "production"`, a Redis error on the
+ * nonce lock rejects the request as retryable instead of falling back to per-instance memory.
  */
 
 import fs from "node:fs";
@@ -37,6 +43,38 @@ export interface NonceLockResult {
   allowed: boolean;
   error?: string;
   key: string;
+  /** True when the lock backend was unreachable in production; nothing was locked, so the caller may retry. */
+  unavailable?: boolean;
+}
+
+export const LOCK_UNAVAILABLE_ERROR = "Payment lock unavailable, retry";
+
+/** Environment namespace for telemetry keys: VERCEL_ENV, or "local" outside Vercel. */
+export function getStorageEnv(): string {
+  return process.env.VERCEL_ENV || "local";
+}
+
+export function settlementsKey(): string {
+  return `x402:${getStorageEnv()}:settlements`;
+}
+
+export function redeemedHashesKey(): string {
+  return `x402:${getStorageEnv()}:redeemed_tx_hashes`;
+}
+
+/** Fail closed only on the real production deployment; local dev and previews keep the memory fallback. */
+function isLockStrictMode(): boolean {
+  return process.env.VERCEL_ENV === "production";
+}
+
+const TX_HASH_RE = /^0x[0-9a-f]{64}$/i;
+
+/**
+ * Only real on-chain settlements may be stored in or published from durable telemetry.
+ * Dev-bypass entries and simulated hashes (`0xsim_…`) are excluded.
+ */
+export function isPublishableSettlement(entry: Pick<AuditLogEntry, "verification_mode" | "tx_hash"> | null | undefined): boolean {
+  return !!entry && entry.verification_mode === "facilitator_onchain" && TX_HASH_RE.test(entry.tx_hash || "");
 }
 
 interface RedisConfig {
@@ -230,7 +268,12 @@ export async function lockPaymentAuthorization(
       }
     }
 
-    // If Redis command errored / timed out, fall through gracefully to in-memory fallback below
+    // Redis errored / timed out / returned something unexpected. In production, fail closed: the
+    // in-memory fallback is per-instance and would reopen the cross-instance double-serve gap.
+    if (isLockStrictMode()) {
+      return { allowed: false, error: LOCK_UNAVAILABLE_ERROR, key, unavailable: true };
+    }
+    // Local dev / preview: fall through to the in-memory fallback below.
   }
 
   // In-memory fallback
@@ -343,7 +386,7 @@ export async function isTxHashRedeemed(
   const config = overrideConfig !== undefined ? overrideConfig : getRedisConfig();
   if (config) {
     const res = await executeRedisCommand<number>(
-      ["SISMEMBER", "x402:redeemed_tx_hashes", normalized],
+      ["SISMEMBER", redeemedHashesKey(), normalized],
       config
     );
     if (res.ok && res.result === 1) {
@@ -427,16 +470,14 @@ export async function recordAuditLog(
   if (localLogs.length > 100) localLogs.pop();
   saveAuditLogsToDisk(localLogs);
 
-  // 2. Persist to Redis list + set
+  // 2. Persist to Redis list + set (real on-chain settlements only; never dev-bypass / simulated hashes)
   const config = overrideConfig !== undefined ? overrideConfig : getRedisConfig();
-  if (config) {
+  if (config && isPublishableSettlement(full)) {
     const commands: (string | number)[][] = [
-      ["LPUSH", "x402:settlements", JSON.stringify(full)],
-      ["LTRIM", "x402:settlements", 0, 49],
+      ["LPUSH", settlementsKey(), JSON.stringify(full)],
+      ["LTRIM", settlementsKey(), 0, 49],
+      ["SADD", redeemedHashesKey(), full.tx_hash.toLowerCase()],
     ];
-    if (full.tx_hash) {
-      commands.push(["SADD", "x402:redeemed_tx_hashes", full.tx_hash.toLowerCase()]);
-    }
     await executeRedisPipeline(commands, config).catch(() => {});
   }
 
@@ -453,7 +494,7 @@ export async function loadRecentAuditLogs(
   const config = overrideConfig !== undefined ? overrideConfig : getRedisConfig();
   if (config) {
     const res = await executeRedisCommand<string[]>(
-      ["LRANGE", "x402:settlements", 0, limit - 1],
+      ["LRANGE", settlementsKey(), 0, limit - 1],
       config
     );
     if (res.ok && Array.isArray(res.result) && res.result.length > 0) {
@@ -504,7 +545,8 @@ export async function getVerifiableTelemetrySummary(
     latency_ms: number;
   }>;
 }> {
-  const logs = await loadRecentAuditLogs(50, overrideConfig);
+  // Publish only real on-chain settlements, regardless of storage backend (Redis or disk fallback).
+  const logs = (await loadRecentAuditLogs(50, overrideConfig)).filter(isPublishableSettlement);
   const onChainLogs = logs.filter((l) => l.verification_mode === "facilitator_onchain");
   const avgLatencyMs =
     logs.length > 0

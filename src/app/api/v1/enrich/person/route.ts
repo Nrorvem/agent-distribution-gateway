@@ -133,6 +133,12 @@ export async function POST(req: NextRequest) {
   );
 
   if (!paymentVerifyResult.verified) {
+    if (paymentVerifyResult.retryable) {
+      return NextResponse.json(
+        { error: paymentVerifyResult.error || "Payment lock unavailable, retry", retryable: true },
+        { status: 503, headers: { "Retry-After": "2", "Content-Type": "application/json" } }
+      );
+    }
     const challenge = {
       ...buildX402Challenge(resourceUrl, description),
       error: paymentVerifyResult.error || "Payment verification failed",

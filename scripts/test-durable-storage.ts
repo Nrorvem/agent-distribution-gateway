@@ -10,11 +10,16 @@
  *    - Pipeline LPUSH + LTRIM + SADD for settlement telemetry
  *    - LRANGE persistent telemetry retrieval surviving cold starts
  *    - High-concurrency race over simulated Redis (10 concurrent requests -> exactly 1 succeeds)
- * 4. Error resilience: graceful fallback to memory when Redis fails or times out.
+ * 4. Error resilience: memory fallback in local/preview; fail-closed (retryable) in production.
+ * 5. Dev-bypass / simulated entries never reach Redis or published telemetry.
+ * 6. Telemetry keys are environment-scoped; nonce locks are shared across environments.
  */
 
 import assert from "node:assert";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import {
   lockPaymentAuthorization,
   checkPaymentAuthorizationLock,
@@ -27,6 +32,8 @@ import {
 } from "../src/lib/x402-storage.ts";
 
 async function runTests() {
+  // Isolate disk fallback (`.audit-logs.json` resolves from cwd) so tests never touch the real local file.
+  process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), "x402-storage-test-")));
   console.log("🧪 Running Durable Storage & Concurrency Test Suite...\n");
 
   // -------------------------------------------------------------------------
@@ -268,14 +275,116 @@ async function runTests() {
       token: "dummy",
     };
 
-    const fallbackLock = await lockPaymentAuthorization(
-      "0xFallbackBuyer",
-      `0xfallback_nonce_${Date.now()}`,
-      Math.floor(Date.now() / 1000) + 300,
-      badConfig
-    );
-    assert.strictEqual(fallbackLock.allowed, true, "Should gracefully fall back to in-memory lock on Redis failure");
-    console.log("   ✅ Graceful fallback verified.\n");
+    const origVercelEnv = process.env.VERCEL_ENV;
+    try {
+      // 4a: local dev / preview keep the in-memory fallback
+      for (const env of [undefined, "preview"]) {
+        if (env === undefined) delete process.env.VERCEL_ENV;
+        else process.env.VERCEL_ENV = env;
+        const fallbackLock = await lockPaymentAuthorization(
+          "0xFallbackBuyer",
+          `0xfallback_nonce_${env}_${Date.now()}`,
+          Math.floor(Date.now() / 1000) + 300,
+          badConfig
+        );
+        assert.strictEqual(fallbackLock.allowed, true, `Should fall back to in-memory lock when Redis fails (env=${env})`);
+      }
+      console.log("   ✅ Local/preview: graceful in-memory fallback verified.");
+
+      // 4b: production fails closed, marked retryable, and takes no lock
+      process.env.VERCEL_ENV = "production";
+      const prodNonce = `0xfailclosed_nonce_${Date.now()}`;
+      const prodValidBefore = Math.floor(Date.now() / 1000) + 300;
+      const closed = await lockPaymentAuthorization("0xFailClosedBuyer", prodNonce, prodValidBefore, badConfig);
+      assert.strictEqual(closed.allowed, false, "Production must fail closed when Redis is unreachable");
+      assert.strictEqual(closed.unavailable, true, "Fail-closed result must be flagged unavailable/retryable");
+      assert.strictEqual(closed.error, "Payment lock unavailable, retry");
+
+      // The failed attempt must not have left an in-memory lock behind: the same authorization
+      // must be lockable once Redis is healthy again.
+      const retry = await lockPaymentAuthorization("0xFailClosedBuyer", prodNonce, prodValidBefore, mockRedisConfig);
+      assert.strictEqual(retry.allowed, true, "Retry after Redis recovers must succeed (no stale lock)");
+
+      // Redis unconfigured (null) in production still uses memory (explicit no-Redis deployment)
+      const noRedis = await lockPaymentAuthorization("0xNoRedisBuyer", `0xnoredis_${Date.now()}`, prodValidBefore, null);
+      assert.strictEqual(noRedis.allowed, true, "Unconfigured Redis keeps the in-memory lock");
+      console.log("   ✅ Production: fails closed (retryable), no stale lock, recovers on retry.\n");
+
+      // -----------------------------------------------------------------------
+      // Test 5: Only real on-chain settlements are stored and published
+      // -----------------------------------------------------------------------
+      console.log("5️⃣  Testing dev-bypass / simulated entries are never published...");
+      delete process.env.VERCEL_ENV;
+      const listKey = "x402:local:settlements";
+      const before = (mockLists.get(listKey) || []).length;
+      const base = {
+        vertical: "option-a-apollo" as const,
+        tool: "enrich_person",
+        payer: "0xDevPayer",
+        amount_usd: "0.03",
+        network: "eip155:8453",
+        matched: true,
+        latency_ms: 10,
+      };
+      await recordAuditLog({ ...base, tx_hash: "0xsim_19a5c3d2", verification_mode: "dev_bypass_token" }, mockRedisConfig);
+      await recordAuditLog({ ...base, tx_hash: "0xsim_19a5c3d3", verification_mode: "facilitator_onchain" }, mockRedisConfig);
+      await recordAuditLog(
+        { ...base, tx_hash: "0x" + "ab".repeat(32), verification_mode: "dev_bypass_token" },
+        mockRedisConfig
+      );
+      assert.strictEqual((mockLists.get(listKey) || []).length, before, "No simulated entry may reach Redis");
+
+      const summary = await getVerifiableTelemetrySummary(mockRedisConfig);
+      const published = summary.recentSettlementTxHashes.join(",");
+      assert(!published.includes("0xsim_"), "Simulated hashes must not be published");
+      assert(!summary.recentSettlementTxHashes.includes("0x" + "ab".repeat(32)), "Dev-bypass entries must not be published");
+      assert(
+        summary.recentSettlementProofs.every((p) => /^0x[0-9a-f]{64}$/i.test(p.tx_hash)),
+        "Every published proof must carry a real 32-byte tx hash"
+      );
+      // The disk/memory fallback is filtered the same way (no Redis configured)
+      const noRedisSummary = await getVerifiableTelemetrySummary(null);
+      assert(!noRedisSummary.recentSettlementTxHashes.join(",").includes("0xsim_"), "Fallback telemetry must also filter");
+      console.log("   ✅ Simulated and dev-bypass entries excluded from Redis and from published telemetry.\n");
+
+      // -----------------------------------------------------------------------
+      // Test 6: Telemetry keys are environment-scoped; auth locks are shared
+      // -----------------------------------------------------------------------
+      console.log("6️⃣  Testing environment-scoped telemetry keys...");
+      process.env.VERCEL_ENV = "production";
+      const prodTx = "0x" + "cd".repeat(32);
+      await recordAuditLog({ ...base, tx_hash: prodTx, verification_mode: "facilitator_onchain" }, mockRedisConfig);
+      assert((mockLists.get("x402:production:settlements") || []).length >= 1, "Production writes x402:production:settlements");
+      assert.strictEqual(await isTxHashRedeemed(prodTx, mockRedisConfig), true);
+
+      // Simulate a different serverless instance: it shares neither this process's memory nor its disk cache.
+      const resetInstance = () => {
+        (globalThis as any).__x402AuditLogs = [];
+        fs.rmSync(path.resolve(process.cwd(), ".audit-logs.json"), { force: true });
+      };
+      resetInstance();
+      process.env.VERCEL_ENV = "preview";
+      const previewSummary = await getVerifiableTelemetrySummary(mockRedisConfig);
+      assert(!previewSummary.recentSettlementTxHashes.includes(prodTx), "Preview must not read production telemetry");
+
+      resetInstance();
+      delete process.env.VERCEL_ENV;
+      const localSummary = await getVerifiableTelemetrySummary(mockRedisConfig);
+      assert(!localSummary.recentSettlementTxHashes.includes(prodTx), "Local must not read production telemetry");
+
+      // Auth locks are intentionally NOT env-scoped: same signature in two envs must still collide
+      const sharedNonce = `0xshared_nonce_${Date.now()}`;
+      process.env.VERCEL_ENV = "preview";
+      const l1 = await lockPaymentAuthorization("0xSharedBuyer", sharedNonce, prodValidBefore, mockRedisConfig);
+      process.env.VERCEL_ENV = "production";
+      const l2 = await lockPaymentAuthorization("0xSharedBuyer", sharedNonce, prodValidBefore, mockRedisConfig);
+      assert.strictEqual(l1.allowed, true);
+      assert.strictEqual(l2.allowed, false, "Same EIP-3009 nonce must be rejected across environments");
+      console.log("   ✅ Telemetry isolated per environment; nonce locks shared across environments.\n");
+    } finally {
+      if (origVercelEnv === undefined) delete process.env.VERCEL_ENV;
+      else process.env.VERCEL_ENV = origVercelEnv;
+    }
 
   } finally {
     server.close();

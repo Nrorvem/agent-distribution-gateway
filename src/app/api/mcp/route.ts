@@ -383,6 +383,20 @@ export async function POST(req: NextRequest) {
       );
 
       if (!verification.verified) {
+        if (verification.retryable) {
+          return NextResponse.json(
+            {
+              jsonrpc: "2.0",
+              id,
+              result: {
+                isError: true,
+                _meta: { retryable: true },
+                content: [{ type: "text", text: verification.error || "Payment lock unavailable, retry" }],
+              },
+            },
+            { status: 503, headers: { "Retry-After": "2" } }
+          );
+        }
         const challenge = buildX402Challenge(resourceUrl, description);
         return NextResponse.json(
           {

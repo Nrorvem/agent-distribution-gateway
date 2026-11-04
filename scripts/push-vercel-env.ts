@@ -49,9 +49,6 @@ function main() {
   if (env.X402_OWNERSHIP_PROOFS) {
     varsToPush.push(["X402_OWNERSHIP_PROOFS", env.X402_OWNERSHIP_PROOFS]);
   }
-  if (env.X402_OWNERSHIP_PROOF) {
-    varsToPush.push(["X402_OWNERSHIP_PROOF", env.X402_OWNERSHIP_PROOF]);
-  }
 
   const execEnv = {
     ...process.env,

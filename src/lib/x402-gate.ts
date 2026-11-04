@@ -337,39 +337,33 @@ export function getGateConfig(targetOrigin?: string) {
   const proofMap: Record<string, string> = {};
   let ownershipProofs: string[] = [];
 
-  const rawProofsEnv = (
-    process.env.X402_OWNERSHIP_PROOFS ||
-    process.env.X402_OWNERSHIP_PROOF ||
-    ""
-  ).trim();
+  const rawProofsEnv = (process.env.X402_OWNERSHIP_PROOFS || "").trim();
 
   if (rawProofsEnv) {
-    try {
-      if (rawProofsEnv.startsWith("{")) {
+    if (rawProofsEnv.startsWith("{")) {
+      try {
         const parsedMap = JSON.parse(rawProofsEnv);
         for (const [k, v] of Object.entries(parsedMap)) {
           if (typeof v === "string" && v.startsWith("0x")) {
             proofMap[k.toLowerCase()] = v;
           }
         }
-      } else if (rawProofsEnv.startsWith("[")) {
+      } catch {
+        // Fallback: parse unquoted object notation like {domain:0x...,domain2:0x...}
+        const matches = rawProofsEnv.matchAll(/([a-zA-Z0-9.-]+)\s*:\s*(0x[0-9a-fA-F]+)/g);
+        for (const m of matches) {
+          proofMap[m[1].toLowerCase()] = m[2];
+        }
+      }
+    } else if (rawProofsEnv.startsWith("[")) {
+      try {
         const parsedArr = JSON.parse(rawProofsEnv);
         ownershipProofs = Array.isArray(parsedArr) ? parsedArr.map(String) : [String(parsedArr)];
-      } else {
-        ownershipProofs = rawProofsEnv.split(",").map((s) => s.trim()).filter(Boolean);
+      } catch {
+        ownershipProofs = [];
       }
-    } catch {
-      ownershipProofs = [rawProofsEnv];
-    }
-  }
-
-  // Fallback single proof (e.g. from existing X402_OWNERSHIP_PROOF)
-  const legacyProof = (process.env.X402_OWNERSHIP_PROOF || "").trim();
-  if (legacyProof && legacyProof.startsWith("0x")) {
-    proofMap["agent-distribution-gateway.vercel.app"] =
-      proofMap["agent-distribution-gateway.vercel.app"] || legacyProof;
-    if (!ownershipProofs.includes(legacyProof)) {
-      ownershipProofs.push(legacyProof);
+    } else {
+      ownershipProofs = rawProofsEnv.split(",").map((s) => s.trim()).filter(Boolean);
     }
   }
 

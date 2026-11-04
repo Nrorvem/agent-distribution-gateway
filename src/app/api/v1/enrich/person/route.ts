@@ -155,7 +155,7 @@ export async function POST(req: NextRequest) {
     // Guard against settling mock data in production (Defense-in-Depth B1 / F1)
     if (isMockOutputBlockedInProduction(enrichment)) {
       if (paymentVerifyResult.authKey) {
-        markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+        await markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
       }
       return NextResponse.json(
         {
@@ -176,7 +176,7 @@ export async function POST(req: NextRequest) {
     // skip `/settle` so the buyer agent's EIP-3009 authorization is never settled on-chain ($0.00 charged).
     if (!hasDeliverableEmail) {
       if (paymentVerifyResult.authKey) {
-        markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+        await markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
       }
       return NextResponse.json(
         {
@@ -233,7 +233,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 6. Record immutable audit log (Stage 6 of Agentic Commerce Lifecycle)
-    const receipt = recordAuditLog({
+    const receipt = await recordAuditLog({
       vertical: "option-a-apollo",
       tool: "enrich_person",
       payer: settledPayer || "unknown",
@@ -279,7 +279,7 @@ export async function POST(req: NextRequest) {
     );
   } catch (err: any) {
     if (paymentVerifyResult.authKey) {
-      markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+      await markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
     }
     return NextResponse.json(
       {

@@ -14,7 +14,7 @@ import { APOLLO_PRODUCTS } from "@/verticals/option-a-apollo/catalog";
 export async function GET(req: NextRequest) {
   const origin = resolveGatewayOrigin(req);
   const cfg = getGateConfig(origin);
-  const telemetry = getVerifiableTelemetrySummary();
+  const telemetry = await getVerifiableTelemetrySummary();
 
   const endpointsMap: Record<string, string> = {
     mcp: `${origin}/api/mcp`,

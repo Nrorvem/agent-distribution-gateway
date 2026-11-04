@@ -137,7 +137,7 @@ export async function handlePaidMcpCall<TInput, TOutput>(
     output = await o.execute(validation.data);
   } catch (err: any) {
     if (verification.authKey) {
-      markPaymentAuthorizationConsumed(verification.authKey);
+      await markPaymentAuthorizationConsumed(verification.authKey);
     }
     return NextResponse.json({
       jsonrpc: "2.0",
@@ -157,7 +157,7 @@ export async function handlePaidMcpCall<TInput, TOutput>(
   // Guard against settling mock data in production (Defense-in-Depth B1 / F1)
   if (isMockOutputBlockedInProduction(output)) {
     if (verification.authKey) {
-      markPaymentAuthorizationConsumed(verification.authKey);
+      await markPaymentAuthorizationConsumed(verification.authKey);
     }
     return NextResponse.json({
       jsonrpc: "2.0",
@@ -181,7 +181,7 @@ export async function handlePaidMcpCall<TInput, TOutput>(
   // 5. Free-on-Miss
   if (!billable) {
     if (verification.authKey) {
-      markPaymentAuthorizationConsumed(verification.authKey);
+      await markPaymentAuthorizationConsumed(verification.authKey);
     }
     return NextResponse.json({
       jsonrpc: "2.0",
@@ -250,7 +250,7 @@ export async function handlePaidMcpCall<TInput, TOutput>(
     settledTxHash = `0xsim_${Date.now().toString(16)}`;
   }
 
-  const receipt = recordAuditLog({
+  const receipt = await recordAuditLog({
     vertical: "option-a-apollo",
     tool: `mcp:${o.tool}`,
     payer: settledPayer || "unknown",

@@ -151,7 +151,7 @@ async function runSixStageLifecycleSimulation() {
   // ---------------------------------------------------------------------------
   console.log("6️⃣  [STAGE 6: APOLLO SUPPLY FULFILLMENT & AUDIT TELEMETRY]");
   const enrichment = await enrichPersonWithApollo(validation.data);
-  const receipt = recordAuditLog({
+  const receipt = await recordAuditLog({
     vertical: "option-a-apollo",
     tool: "enrich_person",
     payer: verification.payer || "unknown",

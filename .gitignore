@@ -19,3 +19,8 @@ AGENTS.md
 
 # Internal review / fix logs (local only)
 docs/reviews/
+
+# Internal planning docs (local only)
+Brainstorm*.md
+FULL_FUNNEL_EXECUTION_PLAN.md
+docs/apollo-endpoint-notes.md

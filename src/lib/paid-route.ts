@@ -134,7 +134,7 @@ export async function handlePaidPost<TInput, TOutput>(
     output = await o.execute(validation.data);
   } catch (err: any) {
     if (paymentVerifyResult.authKey) {
-      markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+      await markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
     }
     return NextResponse.json(
       {
@@ -147,7 +147,7 @@ export async function handlePaidPost<TInput, TOutput>(
   // Guard against settling mock data in production (Defense-in-Depth B1 / F1)
   if (isMockOutputBlockedInProduction(output)) {
     if (paymentVerifyResult.authKey) {
-      markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+      await markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
     }
     return NextResponse.json(
       {
@@ -164,7 +164,7 @@ export async function handlePaidPost<TInput, TOutput>(
   // Free-on-Miss: If not billable, skip settlement ($0.00 charged)
   if (!billable) {
     if (paymentVerifyResult.authKey) {
-      markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
+      await markPaymentAuthorizationConsumed(paymentVerifyResult.authKey);
     }
     return NextResponse.json(
       {
@@ -222,7 +222,7 @@ export async function handlePaidPost<TInput, TOutput>(
   }
 
   // Record audit log
-  const auditReceipt = recordAuditLog({
+  const auditReceipt = await recordAuditLog({
     vertical: o.vertical,
     tool: o.tool,
     payer: settledPayer || "unknown",

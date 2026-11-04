@@ -13,6 +13,37 @@
 
 import { PERSON_ENRICH_JSON_SCHEMA } from "../verticals/option-a-apollo/schema.ts";
 import { signPersonalMessage } from "./eip3009-signer.ts";
+import {
+  type AuditLogEntry,
+  type NonceLockResult,
+  getRedisConfig,
+  lockPaymentAuthorization,
+  checkPaymentAuthorizationLock,
+  markPaymentAuthorizationConsumed,
+  releasePaymentAuthorization,
+  isTxHashRedeemed,
+  recordAuditLog,
+  loadRecentAuditLogs,
+  loadAuditLogsFromDisk,
+  saveAuditLogsToDisk,
+  getVerifiableTelemetrySummary,
+} from "./x402-storage.ts";
+
+export {
+  type AuditLogEntry,
+  type NonceLockResult,
+  getRedisConfig,
+  lockPaymentAuthorization,
+  checkPaymentAuthorizationLock,
+  markPaymentAuthorizationConsumed,
+  releasePaymentAuthorization,
+  isTxHashRedeemed,
+  recordAuditLog,
+  loadRecentAuditLogs,
+  loadAuditLogsFromDisk,
+  saveAuditLogsToDisk,
+  getVerifiableTelemetrySummary,
+};
 
 export interface PaidResourceSpec {
   /** USD price as a decimal string, e.g. "0.02". */
@@ -69,19 +100,6 @@ export interface X402ChallengePayload {
   };
 }
 
-export interface AuditLogEntry {
-  receipt_id: string;
-  timestamp: string;
-  vertical: "option-a-apollo";
-  tool: string;
-  payer: string;
-  amount_usd: string;
-  network: string;
-  tx_hash: string;
-  verification_mode: "facilitator_onchain" | "dev_bypass_token";
-  matched: boolean;
-  latency_ms: number;
-}
 
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -180,96 +198,17 @@ export function buildCdpBearerJwt(params: {
   return `${signingInput}.${sig}`;
 }
 
-// Global in-memory state across warm invocations + /tmp fallback for read-only serverless (Vercel)
+// Global in-memory state across warm invocations for in-flight requests and redeemed hashes
 const globalState = globalThis as unknown as {
-  __x402AuditLogs?: AuditLogEntry[];
-  __x402RedeemedTxHashes?: Set<string>;
   __x402InFlightTxHashes?: Set<string>;
-  __x402PaymentAuthorizations?: Map<string, { status: "in_flight" | "consumed"; validBefore?: number }>;
+  __x402RedeemedTxHashes?: Set<string>;
 };
 
-if (!globalState.__x402RedeemedTxHashes) {
-  globalState.__x402RedeemedTxHashes = new Set<string>();
-}
 if (!globalState.__x402InFlightTxHashes) {
   globalState.__x402InFlightTxHashes = new Set<string>();
 }
-if (!globalState.__x402PaymentAuthorizations) {
-  globalState.__x402PaymentAuthorizations = new Map();
-}
-
-/**
- * Checks whether an EIP-3009 payment authorization has already been used or is currently in flight.
- * Purges expired authorizations whose validBefore timestamp has passed.
- */
-export function checkPaymentAuthorizationLock(
-  from: string,
-  nonce: string
-): { allowed: boolean; error?: string; key: string } {
-  const key = `${from.toLowerCase()}:${nonce.toLowerCase()}`;
-  const nowSec = Math.floor(Date.now() / 1000);
-
-  if (!globalState.__x402PaymentAuthorizations) {
-    globalState.__x402PaymentAuthorizations = new Map();
-  }
-
-  // Purge expired entries
-  for (const [k, v] of globalState.__x402PaymentAuthorizations.entries()) {
-    if (v.validBefore && v.validBefore < nowSec) {
-      globalState.__x402PaymentAuthorizations.delete(k);
-    }
-  }
-
-  const existing = globalState.__x402PaymentAuthorizations.get(key);
-  if (existing) {
-    return {
-      allowed: false,
-      error: "Payment authorization already used",
-      key,
-    };
-  }
-
-  return { allowed: true, key };
-}
-
-/**
- * Locks an EIP-3009 payment authorization as in_flight.
- */
-export function lockPaymentAuthorization(
-  from: string,
-  nonce: string,
-  validBefore?: number
-): { allowed: boolean; error?: string; key: string } {
-  const check = checkPaymentAuthorizationLock(from, nonce);
-  if (!check.allowed) return check;
-
-  globalState.__x402PaymentAuthorizations!.set(check.key, {
-    status: "in_flight",
-    validBefore,
-  });
-
-  return { allowed: true, key: check.key };
-}
-
-/**
- * Marks an in-flight authorization as permanently consumed (e.g. after settlement or miss).
- */
-export function markPaymentAuthorizationConsumed(key?: string): void {
-  if (!key || !globalState.__x402PaymentAuthorizations) return;
-  const existing = globalState.__x402PaymentAuthorizations.get(key);
-  if (existing) {
-    existing.status = "consumed";
-  } else {
-    globalState.__x402PaymentAuthorizations.set(key, { status: "consumed" });
-  }
-}
-
-/**
- * Releases a payment authorization lock if verification failed before execution.
- */
-export function releasePaymentAuthorization(key?: string): void {
-  if (!key || !globalState.__x402PaymentAuthorizations) return;
-  globalState.__x402PaymentAuthorizations.delete(key);
+if (!globalState.__x402RedeemedTxHashes) {
+  globalState.__x402RedeemedTxHashes = new Set<string>();
 }
 
 /**
@@ -286,61 +225,6 @@ export function isMockOutputBlockedInProduction(output: unknown): boolean {
     process.env.VERCEL_ENV === "production" ||
     process.env.NODE_ENV === "production";
   return isMock && isProd;
-}
-
-function getAuditLogFilePath(): string {
-  // On Vercel/AWS Lambda, process.cwd() (/var/task) is read-only; /tmp is writable.
-  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NODE_ENV === "production") {
-    return path.join(os.tmpdir(), "x402-audit-logs.json");
-  }
-  return path.resolve(process.cwd(), ".audit-logs.json");
-}
-
-function loadAuditLogsFromDisk(): AuditLogEntry[] {
-  if (globalState.__x402AuditLogs && globalState.__x402AuditLogs.length > 0) {
-    return globalState.__x402AuditLogs;
-  }
-  const filePath = getAuditLogFilePath();
-  try {
-    if (fs.existsSync(filePath)) {
-      const raw = fs.readFileSync(filePath, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        globalState.__x402AuditLogs = parsed;
-        for (const entry of parsed) {
-          if (entry?.tx_hash) {
-            globalState.__x402RedeemedTxHashes!.add(entry.tx_hash.toLowerCase());
-          }
-        }
-        return parsed;
-      }
-    }
-  } catch {
-    // Ignore file read errors
-  }
-  globalState.__x402AuditLogs = [];
-  return [];
-}
-
-function saveAuditLogsToDisk(logs: AuditLogEntry[]) {
-  globalState.__x402AuditLogs = logs;
-  for (const entry of logs) {
-    if (entry?.tx_hash) {
-      globalState.__x402RedeemedTxHashes!.add(entry.tx_hash.toLowerCase());
-    }
-  }
-  const filePath = getAuditLogFilePath();
-  try {
-    fs.writeFileSync(filePath, JSON.stringify(logs, null, 2), "utf-8");
-  } catch {
-    // Fallback to os.tmpdir() if local cwd write failed
-    try {
-      const tmpFallback = path.join(os.tmpdir(), "x402-audit-logs.json");
-      fs.writeFileSync(tmpFallback, JSON.stringify(logs, null, 2), "utf-8");
-    } catch {
-      // Ignore
-    }
-  }
 }
 
 /**
@@ -806,9 +690,10 @@ async function verifyDirectOnChainTxHash(
   const rpcUrl = BASE_RPC_URLS[cfg.network] || BASE_RPC_URLS.base;
 
   // 1. Replay & concurrent race-condition check
+  const isAlreadyRedeemed = await isTxHashRedeemed(normalizedHash);
   const existingLogs = loadAuditLogsFromDisk();
   if (
-    globalState.__x402RedeemedTxHashes!.has(normalizedHash) ||
+    isAlreadyRedeemed ||
     globalState.__x402InFlightTxHashes!.has(normalizedHash) ||
     existingLogs.some((l) => l.tx_hash?.toLowerCase() === normalizedHash)
   ) {
@@ -1067,15 +952,18 @@ export async function verifyX402Payment(
     ? Number(paymentPayload.payload.authorization.validBefore)
     : undefined;
 
-  // F7: Pre-check payment authorization lock before making facilitator calls to avoid burning rate limits on replays
+  // F7: Atomically lock payment authorization upfront via Redis SET NX (Invariant #6)
+  // Rejects duplicate/concurrent requests before hitting facilitator or upstream supply.
+  let authKey: string | undefined;
   if (authFrom && authNonce) {
-    const preCheck = checkPaymentAuthorizationLock(authFrom, authNonce);
-    if (!preCheck.allowed) {
+    const lockRes = await lockPaymentAuthorization(authFrom, authNonce, authValidBefore);
+    if (!lockRes.allowed) {
       return {
         verified: false,
-        error: "Payment authorization already used",
+        error: lockRes.error || "Payment authorization already used",
       };
     }
+    authKey = lockRes.key;
   }
 
   const payloadVersion = Number(paymentPayload?.x402Version) === 1 ? 1 : 2;
@@ -1175,6 +1063,7 @@ export async function verifyX402Payment(
     }
 
     if (!verifyJson || typeof verifyJson.isValid !== "boolean") {
+      if (authKey) await releasePaymentAuthorization(authKey);
       return {
         verified: false,
         facilitator: activeFacilitatorUrl,
@@ -1183,6 +1072,7 @@ export async function verifyX402Payment(
     }
 
     if (!verifyJson.isValid) {
+      if (authKey) await releasePaymentAuthorization(authKey);
       const detail = [verifyJson.invalidReason, verifyJson.invalidMessage]
         .filter(Boolean)
         .join(" — ");
@@ -1197,18 +1087,6 @@ export async function verifyX402Payment(
       verifyJson.payer ||
       authFrom ||
       "0xVerifiedAgentWallet";
-
-    let authKey: string | undefined;
-    if (authFrom && authNonce) {
-      const lockRes = lockPaymentAuthorization(authFrom, authNonce, authValidBefore);
-      if (!lockRes.allowed) {
-        return {
-          verified: false,
-          error: "Payment authorization already used",
-        };
-      }
-      authKey = lockRes.key;
-    }
 
     const settlementContext: X402PendingSettlementContext = {
       activeFacilitatorUrl,
@@ -1232,6 +1110,7 @@ export async function verifyX402Payment(
 
     return await settleVerifiedX402Payment(settlementContext);
   } catch (err: any) {
+    if (authKey) await releasePaymentAuthorization(authKey);
     return {
       verified: false,
       error: `Facilitator unreachable or rejected proof: ${err?.message || String(err)}`,
@@ -1325,7 +1204,7 @@ export async function settleVerifiedX402Payment(
     };
 
     if (settleJson.success === false) {
-      if (context.authKey) markPaymentAuthorizationConsumed(context.authKey);
+      if (context.authKey) await markPaymentAuthorizationConsumed(context.authKey);
       return {
         verified: false,
         settled: false,
@@ -1341,7 +1220,7 @@ export async function settleVerifiedX402Payment(
     const settledTxHash =
       settleJson.transaction || settleJson.txHash || settleJson.tx_hash;
     if (!settledTxHash) {
-      if (context.authKey) markPaymentAuthorizationConsumed(context.authKey);
+      if (context.authKey) await markPaymentAuthorizationConsumed(context.authKey);
       return {
         verified: false,
         settled: false,
@@ -1351,8 +1230,7 @@ export async function settleVerifiedX402Payment(
       };
     }
 
-    globalState.__x402RedeemedTxHashes!.add(settledTxHash.toLowerCase());
-    if (context.authKey) markPaymentAuthorizationConsumed(context.authKey);
+    if (context.authKey) await markPaymentAuthorizationConsumed(context.authKey);
 
     return {
       verified: true,
@@ -1363,7 +1241,7 @@ export async function settleVerifiedX402Payment(
       txHash: settledTxHash,
     };
   } catch (err: any) {
-    if (context.authKey) markPaymentAuthorizationConsumed(context.authKey);
+    if (context.authKey) await markPaymentAuthorizationConsumed(context.authKey);
     return {
       verified: false,
       settled: false,
@@ -1374,57 +1252,8 @@ export async function settleVerifiedX402Payment(
   }
 }
 
-export function recordAuditLog(entry: Omit<AuditLogEntry, "receipt_id" | "timestamp">): AuditLogEntry {
-  const logs = loadAuditLogsFromDisk();
-  const full: AuditLogEntry = {
-    receipt_id: `rcpt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    timestamp: new Date().toISOString(),
-    ...entry,
-  };
-  logs.unshift(full);
-  if (logs.length > 100) {
-    logs.pop();
-  }
-  saveAuditLogsToDisk(logs);
-  return full;
-}
-
-export function getRecentAuditLogs(): AuditLogEntry[] {
-  return loadAuditLogsFromDisk();
-}
-
-export function getVerifiableTelemetrySummary() {
-  const logs = loadAuditLogsFromDisk();
-  const onChainLogs = logs.filter((l) => l.verification_mode === "facilitator_onchain");
-  const avgLatencyMs =
-    logs.length > 0
-      ? Math.round(logs.reduce((acc, l) => acc + (l.latency_ms || 0), 0) / logs.length)
-      : 650;
-
-  return {
-    totalCompletedTransactions: logs.length,
-    verifiedOnChainSettlements: onChainLogs.length,
-    averageLatencyMs: avgLatencyMs,
-    fulfillmentSuccessRate: "100%",
-    recentSettlementTxHashes: logs
-      .map((l) => l.tx_hash)
-      .filter(Boolean)
-      .slice(0, 10),
-    recentSettlementProofs: logs.slice(0, 5).map((l) => ({
-      receipt_id: l.receipt_id,
-      timestamp: l.timestamp,
-      network: l.network,
-      amount_usd: l.amount_usd,
-      tx_hash: l.tx_hash,
-      verification_mode: l.verification_mode,
-      explorer_url:
-        l.network === "base-sepolia"
-          ? `https://sepolia.basescan.org/tx/${l.tx_hash}`
-          : `https://basescan.org/tx/${l.tx_hash}`,
-      matched: l.matched,
-      latency_ms: l.latency_ms,
-    })),
-  };
+export async function getRecentAuditLogs(): Promise<AuditLogEntry[]> {
+  return await loadRecentAuditLogs();
 }
 
 

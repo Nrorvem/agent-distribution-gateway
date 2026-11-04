@@ -99,16 +99,40 @@ async function run() {
       const payer = "0xUnitTestBuyerWallet";
       const validBefore = Math.floor(Date.now() / 1000) + 300;
 
-      const first = lockPaymentAuthorization(payer, nonce, validBefore);
+      const first = await lockPaymentAuthorization(payer, nonce, validBefore);
       assert(first.allowed === true, `Expected first lock to succeed, got ${JSON.stringify(first)}`);
 
-      const second = lockPaymentAuthorization(payer, nonce, validBefore);
+      const second = await lockPaymentAuthorization(payer, nonce, validBefore);
       assert(second.allowed === false, "Expected second lock to be rejected");
       assert(second.error === "Payment authorization already used", `Unexpected error: ${second.error}`);
 
       results.push({ id: "S12", name: "EIP-3009 nonce lock helper rejects reused authorization", passed: true });
     } catch (err: any) {
       results.push({ id: "S12", name: "EIP-3009 nonce lock helper rejects reused authorization", passed: false, error: err.message });
+    }
+  }
+
+  // --- S14: Parallel concurrent nonce lock race test ---
+  if (shouldRun("S14")) {
+    try {
+      const nonce = `0xunit_race_nonce_${Date.now()}`;
+      const payer = "0xRaceBuyerWallet";
+      const validBefore = Math.floor(Date.now() / 1000) + 300;
+
+      const [resA, resB] = await Promise.all([
+        lockPaymentAuthorization(payer, nonce, validBefore),
+        lockPaymentAuthorization(payer, nonce, validBefore),
+      ]);
+
+      const successes = [resA, resB].filter((r) => r.allowed).length;
+      const rejections = [resA, resB].filter((r) => !r.allowed && r.error === "Payment authorization already used").length;
+
+      assert(successes === 1, `Expected exactly 1 success in parallel race, got ${successes}`);
+      assert(rejections === 1, `Expected exactly 1 rejection in parallel race, got ${rejections}`);
+
+      results.push({ id: "S14", name: "Parallel concurrent requests: exactly one lock succeeds, one rejected", passed: true });
+    } catch (err: any) {
+      results.push({ id: "S14", name: "Parallel concurrent requests: exactly one lock succeeds, one rejected", passed: false, error: err.message });
     }
   }
 

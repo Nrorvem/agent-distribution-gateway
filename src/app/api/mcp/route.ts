@@ -415,7 +415,7 @@ export async function POST(req: NextRequest) {
         enrichment = await enrichPersonWithApollo(validation.data);
       } catch (err: any) {
         if (verification.authKey) {
-          markPaymentAuthorizationConsumed(verification.authKey);
+          await markPaymentAuthorizationConsumed(verification.authKey);
         }
         return NextResponse.json({
           jsonrpc: "2.0",
@@ -435,7 +435,7 @@ export async function POST(req: NextRequest) {
       // Guard against settling mock data in production (Defense-in-Depth B1 / F1)
       if (isMockOutputBlockedInProduction(enrichment)) {
         if (verification.authKey) {
-          markPaymentAuthorizationConsumed(verification.authKey);
+          await markPaymentAuthorizationConsumed(verification.authKey);
         }
         return NextResponse.json({
           jsonrpc: "2.0",
@@ -461,7 +461,7 @@ export async function POST(req: NextRequest) {
 
       if (!hasDeliverableEmail) {
         if (verification.authKey) {
-          markPaymentAuthorizationConsumed(verification.authKey);
+          await markPaymentAuthorizationConsumed(verification.authKey);
         }
         return NextResponse.json({
           jsonrpc: "2.0",
@@ -531,7 +531,7 @@ export async function POST(req: NextRequest) {
         settledTxHash = `0xsim_${Date.now().toString(16)}`;
       }
 
-      const receipt = recordAuditLog({
+      const receipt = await recordAuditLog({
         vertical: "option-a-apollo",
         tool: "mcp:enrich_person",
         payer: settledPayer || "unknown",

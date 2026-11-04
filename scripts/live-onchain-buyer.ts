@@ -6,6 +6,7 @@
  *
  * Step 1: Sends the enrichment request WITHOUT payment -> receives the live HTTP 402
  *         x402 challenge from Vercel.
+ * (Add `--race` to sign ONE authorization and replay it concurrently; asserts exactly one request is served.)
  * Step 2:
  *   - Path B (Standard Agent Flow — EIP-3009 Gasless Off-Chain Signature):
  *     If `BUYER_PRIVATE_KEY` is set (in env or `.env.local`), signs a single-use
@@ -90,7 +91,10 @@ if (maxUsdFlagIdx !== -1 && args[maxUsdFlagIdx + 1]) {
   maxUsdCap = parsed;
 }
 
+const raceMode = args.includes("--race");
+
 const positionalArgs = args.filter((a, i) =>
+  a !== "--race" &&
   a !== "--url" && (urlFlagIdx === -1 || i !== urlFlagIdx + 1) &&
   a !== "--body" && (bodyFlagIdx === -1 || i !== bodyFlagIdx + 1) &&
   a !== "--max-usd" && (maxUsdFlagIdx === -1 || i !== maxUsdFlagIdx + 1)
@@ -264,6 +268,61 @@ async function main() {
 
     console.log(`   • Nonce              : ${signed.paymentPayload.payload.authorization.nonce}`);
     console.log(`   • Submitting PAYMENT-SIGNATURE header to ${PRODUCTION_ENDPOINT} ...\n`);
+
+    if (raceMode) {
+      // Replay-protection check against the DEPLOYED gateway: ONE signed authorization, submitted twice
+      // concurrently and once more afterwards. Exactly one request may be served; the rest must be 402
+      // "already used". Costs at most one settlement ($ amount above) and only on a match (Free-on-Miss).
+      const auth = signed.paymentPayload.payload.authorization;
+      const redisKey = `x402:auth:${String(auth.from).toLowerCase()}:${String(auth.nonce).toLowerCase()}`;
+      console.log(`   • RACE MODE: 2 parallel + 1 sequential replay with the SAME authorization`);
+      console.log(`   • Redis lock key     : ${redisKey}\n`);
+
+      const fire = async (label: string) => {
+        const t0 = Date.now();
+        const r = await fetch(PRODUCTION_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "PAYMENT-SIGNATURE": signed.headerBase64 },
+          body: JSON.stringify(payload),
+        });
+        const body = (await r.json().catch(() => ({}))) as Record<string, any>;
+        return {
+          label,
+          status: r.status,
+          ms: Date.now() - t0,
+          settledHeader: r.headers.get("x-payment-settled"),
+          error: typeof body.error === "string" ? body.error : undefined,
+          txHash: body.receipt?.tx_hash as string | undefined,
+          settled: body.payment_settled as boolean | undefined,
+        };
+      };
+
+      const [a, b] = await Promise.all([fire("parallel-A"), fire("parallel-B")]);
+      const replay = await fire("sequential-replay");
+      const all = [a, b, replay];
+      for (const r of all) {
+        console.log(
+          `   • ${r.label.padEnd(18)} HTTP ${r.status} (${r.ms} ms) settled=${r.settled ?? "n/a"} header=${r.settledHeader || "absent"} ${r.txHash ? "tx=" + r.txHash : ""} ${r.error ? "error=" + r.error : ""}`
+        );
+      }
+
+      const served = [a, b].filter((r) => r.status === 200);
+      const rejected = [a, b].filter((r) => r.status === 402 && r.error === "Payment authorization already used");
+      const checks: Array<[string, boolean]> = [
+        ["exactly one of the parallel requests was served (200)", served.length === 1],
+        ["the other parallel request was rejected 402 'already used'", rejected.length === 1],
+        ["sequential replay after completion rejected 402 'already used'", replay.status === 402 && replay.error === "Payment authorization already used"],
+        ["at most one on-chain settlement", all.filter((r) => r.txHash).length <= 1],
+      ];
+      console.log("");
+      let ok = true;
+      for (const [name, pass] of checks) {
+        console.log(`   ${pass ? "✅" : "❌"} ${name}`);
+        if (!pass) ok = false;
+      }
+      console.log(`\n   RACE TEST ${ok ? "PASSED" : "FAILED"}`);
+      process.exit(ok ? 0 : 1);
+    }
 
     const paidRes = await fetch(PRODUCTION_ENDPOINT, {
       method: "POST",
